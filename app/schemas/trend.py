@@ -23,6 +23,11 @@ class TrendItemResponse(BaseModel):
     peak_day_share: float
     final_score: float
     status: str
+    search_interest_score: float = 50.0
+    search_provider_count: int = 0
+    search_coverage_score: float = 0.0
+    google_trends_score: float | None = None
+    naver_datalab_score: float | None = None
 
 
 class TrendListResponse(BaseModel):

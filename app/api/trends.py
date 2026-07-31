@@ -7,6 +7,7 @@ from app.repositories.trend_repository import (
     get_status_counts,
     get_trends_by_status,
 )
+from app.repositories.search_interest_repository import get_validations_for_week
 from app.schemas.trend import (
     TrendListResponse,
     TrendRecalculateResponse,
@@ -93,23 +94,37 @@ def _trend_list_response(
         )
     week_start, week_end = week_range
     trends = get_trends_by_status(session, status=status, limit=limit)
+    validations = get_validations_for_week(
+        session,
+        week_start=week_start,
+        keywords=[trend.keyword for trend in trends],
+    )
     return {
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
         "total": len(trends),
         "items": [
-            {
-                "rank": index,
-                "keyword": trend.keyword,
-                "weekly_mentions": trend.weekly_mentions,
-                "previous_weekly_mentions": trend.previous_weekly_mentions,
-                "active_days": trend.active_days,
-                "source_count": trend.source_count,
-                "growth_rate": trend.growth_rate,
-                "peak_day_share": trend.peak_day_share,
-                "final_score": trend.final_score,
-                "status": trend.status,
-            }
+            _trend_item_response(index, trend, validations.get(trend.keyword))
             for index, trend in enumerate(trends, start=1)
         ],
+    }
+
+
+def _trend_item_response(index, trend, validation) -> dict[str, object]:
+    return {
+        "rank": index,
+        "keyword": trend.keyword,
+        "weekly_mentions": trend.weekly_mentions,
+        "previous_weekly_mentions": trend.previous_weekly_mentions,
+        "active_days": trend.active_days,
+        "source_count": trend.source_count,
+        "growth_rate": trend.growth_rate,
+        "peak_day_share": trend.peak_day_share,
+        "final_score": trend.final_score,
+        "status": trend.status,
+        "search_interest_score": trend.search_interest_score,
+        "search_provider_count": validation.provider_count if validation else 0,
+        "search_coverage_score": validation.coverage_score if validation else 0.0,
+        "google_trends_score": validation.google_score if validation else None,
+        "naver_datalab_score": validation.naver_score if validation else None,
     }

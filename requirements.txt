@@ -6,3 +6,4 @@ httpx
 feedparser
 APScheduler>=3.11,<4
 tzdata
+python-multipart
