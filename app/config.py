@@ -20,6 +20,13 @@ class Settings:
     weekly_calculation_minute: int
     scheduler_timezone: str
     run_collection_on_startup: bool
+    ner_enabled: bool
+    ner_model_name: str
+    ner_device: str
+    ner_threshold: float
+    ner_text_max_chars: int
+    ner_batch_size: int
+    ner_max_documents_per_run: int
 
 
 @lru_cache
@@ -42,6 +49,13 @@ def get_settings() -> Settings:
         weekly_calculation_minute=_int_from_env("WEEKLY_CALCULATION_MINUTE", 0),
         scheduler_timezone=os.getenv("SCHEDULER_TIMEZONE", "Asia/Seoul").strip(),
         run_collection_on_startup=_bool_from_env("RUN_COLLECTION_ON_STARTUP", False),
+        ner_enabled=_bool_from_env("NER_ENABLED", True),
+        ner_model_name=os.getenv("NER_MODEL_NAME", "urchade/gliner_multi-v2.1").strip(),
+        ner_device=os.getenv("NER_DEVICE", "cpu").strip().lower(),
+        ner_threshold=_float_from_env("NER_THRESHOLD", 0.45),
+        ner_text_max_chars=_int_from_env("NER_TEXT_MAX_CHARS", 1500),
+        ner_batch_size=_int_from_env("NER_BATCH_SIZE", 4),
+        ner_max_documents_per_run=_int_from_env("NER_MAX_DOCUMENTS_PER_RUN", 100),
     )
 
 
@@ -65,6 +79,16 @@ def _bool_from_env(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _float_from_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None or raw_value.strip() == "":
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default
 
 
 def _load_env_file() -> None:

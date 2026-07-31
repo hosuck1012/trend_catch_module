@@ -7,3 +7,4 @@ feedparser
 APScheduler>=3.11,<4
 tzdata
 python-multipart
+gliner>=0.2.24,<0.3

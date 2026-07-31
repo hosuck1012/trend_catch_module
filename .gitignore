@@ -6,4 +6,8 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+*.log
 *.egg-info/
+.huggingface/
+huggingface/
+hf_cache/

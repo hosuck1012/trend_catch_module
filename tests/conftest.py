@@ -8,6 +8,7 @@ TEST_DB_PATH = Path(__file__).parent / "test_trend_engine.sqlite3"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.resolve().as_posix()}"
 os.environ["SCHEDULER_ENABLED"] = "false"
 os.environ["RUN_COLLECTION_ON_STARTUP"] = "false"
+os.environ["NER_ENABLED"] = "false"
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.config import get_settings  # noqa: E402

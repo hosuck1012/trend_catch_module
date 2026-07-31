@@ -28,6 +28,9 @@ class TrendItemResponse(BaseModel):
     search_coverage_score: float = 0.0
     google_trends_score: float | None = None
     naver_datalab_score: float | None = None
+    primary_entity: str | None = None
+    primary_entity_type: str | None = None
+    travel_entity_count: int = 0
 
 
 class TrendListResponse(BaseModel):
