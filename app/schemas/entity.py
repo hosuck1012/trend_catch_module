@@ -1,6 +1,6 @@
 from datetime import date
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class EntityExtractionResponse(BaseModel):
@@ -11,6 +11,7 @@ class EntityExtractionResponse(BaseModel):
     inserted_entities: int
     entity_counts: dict[str, int]
     extractor_counts: dict[str, int]
+    errors: list[str] = Field(default_factory=list)
     model_error: str | None = None
 
 

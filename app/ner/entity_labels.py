@@ -14,16 +14,16 @@ class EntityType(StrEnum):
 
 
 ENTITY_LABEL_DESCRIPTIONS: dict[EntityType, str] = {
-    EntityType.LOCATION: "geographic location, country, province, city or district",
+    EntityType.LOCATION: "city, province, country, district or geographic region",
     EntityType.PLACE: (
-        "tourist attraction, landmark, station, airport, beach, park, building or venue"
+        "tourist attraction, landmark, station, airport, beach, park or venue"
     ),
-    EntityType.PERSON: "person, celebrity, actor, singer or public figure",
+    EntityType.PERSON: "celebrity, actor, singer or public figure",
     EntityType.CONTENT_TITLE: "movie, drama, television show, song, webtoon or book title",
-    EntityType.EVENT: "festival, concert, exhibition, sports event or public event",
-    EntityType.FOOD: "food, dish, dessert, beverage or local specialty",
-    EntityType.BRAND: "brand, company, product brand or organization",
-    EntityType.MEME: "internet meme, viral phrase, challenge or online trend expression",
+    EntityType.EVENT: "festival, concert, exhibition, marathon or public event",
+    EntityType.FOOD: "dish, dessert, beverage or local specialty",
+    EntityType.BRAND: "company, organization, product or brand",
+    EntityType.MEME: "internet meme, viral phrase, challenge or online trend",
 }
 
 GLINER_LABEL_TO_ENTITY_TYPE = {

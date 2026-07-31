@@ -54,7 +54,7 @@ def get_settings() -> Settings:
         ner_device=os.getenv("NER_DEVICE", "cpu").strip().lower(),
         ner_threshold=_float_from_env("NER_THRESHOLD", 0.45),
         ner_text_max_chars=_int_from_env("NER_TEXT_MAX_CHARS", 1500),
-        ner_batch_size=_int_from_env("NER_BATCH_SIZE", 4),
+        ner_batch_size=_int_from_env("NER_BATCH_SIZE", 1),
         ner_max_documents_per_run=_int_from_env("NER_MAX_DOCUMENTS_PER_RUN", 100),
     )
 

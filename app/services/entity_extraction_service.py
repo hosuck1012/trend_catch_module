@@ -32,6 +32,7 @@ class EntityExtractionResult:
     inserted_entities: int
     entity_counts: dict[str, int]
     extractor_counts: dict[str, int]
+    errors: list[str]
     model_error: str | None
 
 
@@ -125,6 +126,7 @@ async def extract_entities(
             extractor: extractor_counts[extractor]
             for extractor in ("gliner", "dictionary", "rule", "merged")
         },
+        errors=[model_error] if model_error else [],
         model_error=model_error,
     )
 

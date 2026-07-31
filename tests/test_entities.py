@@ -1,5 +1,6 @@
 import asyncio
 from datetime import date, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
@@ -21,7 +22,10 @@ from app.ner.entity_resolver import resolve_entities
 from app.ner.entity_rules import extract_rule_entities
 from app.ner.gliner_adapter import GlinerAdapter
 from app.services.entity_extraction_service import extract_entities
-from app.services.trend_entity_link_service import link_trends_to_entities
+from app.services.trend_entity_link_service import (
+    _calculate_links,
+    link_trends_to_entities,
+)
 
 
 SAMPLES = (
@@ -37,8 +41,15 @@ def test_gliner_label_mapping_is_complete() -> None:
     assert set(ENTITY_LABEL_DESCRIPTIONS) == set(EntityType)
     assert set(GLINER_LABEL_TO_ENTITY_TYPE.values()) == set(EntityType)
     assert GLINER_LABEL_TO_ENTITY_TYPE[
-        "geographic location, country, province, city or district"
+        "city, province, country, district or geographic region"
     ] == EntityType.LOCATION
+
+
+def test_ner_batch_size_default_is_one(monkeypatch) -> None:
+    monkeypatch.delenv("NER_BATCH_SIZE", raising=False)
+    get_settings.cache_clear()
+
+    assert get_settings().ner_batch_size == 1
 
 
 def test_ner_disabled_does_not_load_model(monkeypatch) -> None:
@@ -132,6 +143,7 @@ def test_model_loading_failure_keeps_rule_extraction(monkeypatch, db_session) ->
     assert result.status == "partial_success"
     assert result.model_status == "error"
     assert result.inserted_entities >= 2
+    assert result.errors == [result.model_error]
     assert {row.entity_type for row in db_session.scalars(select(EntityMention))} >= {
         "EVENT",
         "PLACE",
@@ -230,6 +242,7 @@ def test_extract_model_status_and_summary_apis(client, db_session) -> None:
     assert extracted.status_code == 200
     assert extracted.json()["model_status"] == "disabled"
     assert extracted.json()["inserted_entities"] >= 3
+    assert extracted.json()["errors"] == []
     assert summary.status_code == 200
     assert summary.json()["total_entities"] >= 1
     assert summary.json()["items"][0]["canonical_text"] == "제주특별자치도"
@@ -260,6 +273,44 @@ def test_trend_entity_link_calculation_weight_and_primary(db_session) -> None:
     assert primary.relation_score > next(
         link.relation_score for link in links if link.entity_type == "PERSON"
     )
+
+
+@pytest.mark.parametrize("travel_type", ["LOCATION", "PLACE"])
+def test_location_and_place_receive_travel_weight(travel_type) -> None:
+    occurred_at = datetime(2026, 7, 30, 12)
+    groups = {
+        ("여행객체", travel_type): [
+            SimpleNamespace(
+                text="여행객체",
+                document_id=1,
+                source="youtube",
+                confidence=0.5,
+            )
+        ],
+        ("아이유", "PERSON"): [
+            SimpleNamespace(
+                text="아이유",
+                document_id=1,
+                source="youtube",
+                confidence=0.5,
+            )
+        ],
+    }
+
+    links = _calculate_links(
+        keyword="테스트",
+        week_start=date(2026, 7, 25),
+        week_end=date(2026, 7, 31),
+        document_ids=[1],
+        total_source_count=1,
+        groups=groups,
+        calculated_at=occurred_at,
+    )
+    by_type = {link["entity_type"]: link for link in links}
+
+    assert by_type[travel_type]["relation_score"] == 99.0
+    assert by_type["PERSON"]["relation_score"] == 90.0
+    assert by_type[travel_type]["is_primary"] is True
 
 
 def test_link_and_by_keyword_apis_and_weekly_extension(client, db_session) -> None:
