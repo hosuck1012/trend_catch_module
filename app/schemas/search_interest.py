@@ -67,7 +67,7 @@ class SearchValidationDetailResponse(BaseModel):
     week_end: date
     google_score: float | None
     naver_score: float | None
-    combined_score: float
+    combined_score: float | None
     provider_count: int
     coverage_score: float
     current_average: float

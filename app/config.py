@@ -27,6 +27,40 @@ class Settings:
     ner_text_max_chars: int
     ner_batch_size: int
     ner_max_documents_per_run: int
+    keyword_pipeline_version: str
+    keyword_min_length_ko: int
+    keyword_min_length_en: int
+    keyword_max_length: int
+    keyword_min_quality_score: float
+    keyword_max_candidates_per_document: int
+    keyword_title_weight: float
+    keyword_ner_weight: float
+    keyword_phrase_weight: float
+    keyword_source_diversity_weight: float
+    keyword_enable_kiwi: bool
+    keyword_keep_legacy_results: bool
+    wikipedia_enabled: bool
+    wikipedia_language: str
+    wikipedia_search_limit: int
+    wikipedia_timeout_seconds: int
+    wikipedia_summary_max_chars: int
+    wikimedia_client_name: str
+    wikimedia_client_version: str
+    wikimedia_contact_url: str
+    wikimedia_contact_email: str
+    context_match_threshold: float
+    context_max_entities_per_run: int
+    gemini_enabled: bool
+    gemini_api_key: str
+    gemini_model: str
+    gemini_timeout_seconds: int
+    gemini_max_input_chars: int
+    gemini_max_documents: int
+    gemini_max_contexts: int
+    gemini_temperature: float
+    gemini_max_output_tokens: int
+    gemini_analysis_cache_hours: int
+    gemini_max_items_per_run: int
 
 
 @lru_cache
@@ -56,6 +90,58 @@ def get_settings() -> Settings:
         ner_text_max_chars=_int_from_env("NER_TEXT_MAX_CHARS", 1500),
         ner_batch_size=_int_from_env("NER_BATCH_SIZE", 1),
         ner_max_documents_per_run=_int_from_env("NER_MAX_DOCUMENTS_PER_RUN", 100),
+        keyword_pipeline_version=os.getenv("KEYWORD_PIPELINE_VERSION", "v2").strip(),
+        keyword_min_length_ko=_int_from_env("KEYWORD_MIN_LENGTH_KO", 2),
+        keyword_min_length_en=_int_from_env("KEYWORD_MIN_LENGTH_EN", 3),
+        keyword_max_length=_int_from_env("KEYWORD_MAX_LENGTH", 40),
+        keyword_min_quality_score=_float_from_env("KEYWORD_MIN_QUALITY_SCORE", 45),
+        keyword_max_candidates_per_document=_int_from_env(
+            "KEYWORD_MAX_CANDIDATES_PER_DOCUMENT", 30
+        ),
+        keyword_title_weight=_float_from_env("KEYWORD_TITLE_WEIGHT", 1.5),
+        keyword_ner_weight=_float_from_env("KEYWORD_NER_WEIGHT", 1.8),
+        keyword_phrase_weight=_float_from_env("KEYWORD_PHRASE_WEIGHT", 1.4),
+        keyword_source_diversity_weight=_float_from_env(
+            "KEYWORD_SOURCE_DIVERSITY_WEIGHT", 1.2
+        ),
+        keyword_enable_kiwi=_bool_from_env("KEYWORD_ENABLE_KIWI", True),
+        keyword_keep_legacy_results=_bool_from_env(
+            "KEYWORD_KEEP_LEGACY_RESULTS", False
+        ),
+        wikipedia_enabled=_bool_from_env("WIKIPEDIA_ENABLED", True),
+        wikipedia_language=os.getenv("WIKIPEDIA_LANGUAGE", "ko").strip().lower(),
+        wikipedia_search_limit=_int_from_env("WIKIPEDIA_SEARCH_LIMIT", 5),
+        wikipedia_timeout_seconds=_int_from_env("WIKIPEDIA_TIMEOUT_SECONDS", 15),
+        wikipedia_summary_max_chars=_int_from_env(
+            "WIKIPEDIA_SUMMARY_MAX_CHARS", 1000
+        ),
+        wikimedia_client_name=os.getenv(
+            "WIKIMEDIA_CLIENT_NAME", "TrendCatchModule"
+        ).strip(),
+        wikimedia_client_version=os.getenv(
+            "WIKIMEDIA_CLIENT_VERSION", "0.1"
+        ).strip(),
+        wikimedia_contact_url=os.getenv("WIKIMEDIA_CONTACT_URL", "").strip(),
+        wikimedia_contact_email=os.getenv("WIKIMEDIA_CONTACT_EMAIL", "").strip(),
+        context_match_threshold=_float_from_env("CONTEXT_MATCH_THRESHOLD", 0.70),
+        context_max_entities_per_run=_int_from_env(
+            "CONTEXT_MAX_ENTITIES_PER_RUN", 30
+        ),
+        gemini_enabled=_bool_from_env("GEMINI_ENABLED", False),
+        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
+        gemini_model=os.getenv("GEMINI_MODEL", "").strip(),
+        gemini_timeout_seconds=_int_from_env("GEMINI_TIMEOUT_SECONDS", 30),
+        gemini_max_input_chars=_int_from_env("GEMINI_MAX_INPUT_CHARS", 12000),
+        gemini_max_documents=_int_from_env("GEMINI_MAX_DOCUMENTS", 8),
+        gemini_max_contexts=_int_from_env("GEMINI_MAX_CONTEXTS", 5),
+        gemini_temperature=_float_from_env("GEMINI_TEMPERATURE", 0.2),
+        gemini_max_output_tokens=_int_from_env(
+            "GEMINI_MAX_OUTPUT_TOKENS", 1800
+        ),
+        gemini_analysis_cache_hours=_int_from_env(
+            "GEMINI_ANALYSIS_CACHE_HOURS", 24
+        ),
+        gemini_max_items_per_run=_int_from_env("GEMINI_MAX_ITEMS_PER_RUN", 10),
     )
 
 

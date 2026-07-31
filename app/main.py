@@ -4,8 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.collection import router as collection_router
+from app.api.ai_analysis import router as ai_analysis_router
+from app.api.context import router as context_router
+from app.api.dashboard import router as dashboard_router
 from app.api.entities import router as entities_router
 from app.api.keywords import router as keywords_router
+from app.api.keyword_quality import router as keyword_quality_router
 from app.api.newsis_rss import router as newsis_rss_router
 from app.api.scheduler import router as scheduler_router
 from app.api.search_interest import router as search_interest_router
@@ -30,8 +34,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title=settings.service_name, lifespan=lifespan)
+app.include_router(ai_analysis_router)
 app.include_router(collection_router)
+app.include_router(context_router)
+app.include_router(dashboard_router)
 app.include_router(entities_router)
+app.include_router(keyword_quality_router)
 app.include_router(keywords_router)
 app.include_router(newsis_rss_router)
 app.include_router(scheduler_router)

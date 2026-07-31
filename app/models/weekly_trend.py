@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -27,9 +27,14 @@ class WeeklyTrend(Base):
     freshness_score: Mapped[float] = mapped_column(Float)
     volume_score: Mapped[float] = mapped_column(Float)
     growth_score: Mapped[float] = mapped_column(Float)
-    search_interest_score: Mapped[float] = mapped_column(Float)
+    trend_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    keyword_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    search_interest_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    search_interest_available: Mapped[bool] = mapped_column(Boolean, default=False)
+    search_provider_count: Mapped[int] = mapped_column(Integer, default=0)
     one_day_spike_penalty: Mapped[float] = mapped_column(Float)
     spam_penalty: Mapped[float] = mapped_column(Float)
     final_score: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(50))
     calculated_at: Mapped[datetime] = mapped_column(DateTime)
+    pipeline_version: Mapped[str] = mapped_column(String(20), default="legacy")

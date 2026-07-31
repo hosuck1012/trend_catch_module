@@ -103,6 +103,7 @@ def _build_metrics(
     previous_counts: Counter[str] = Counter()
     daily_counts: dict[str, Counter[date]] = defaultdict(Counter)
     sources: dict[str, set[str]] = defaultdict(set)
+    quality_scores: dict[str, list[float]] = defaultdict(list)
     keywords = {row.keyword for row in rows}
     recent_start = week_end - timedelta(days=1)
 
@@ -111,6 +112,8 @@ def _build_metrics(
             weekly_counts[row.keyword] += 1
             daily_counts[row.keyword][row.occurred_date] += 1
             sources[row.keyword].add(row.source)
+            if row.keyword_quality_score is not None:
+                quality_scores[row.keyword].append(row.keyword_quality_score)
         elif previous_week_start <= row.occurred_date <= previous_week_end:
             previous_counts[row.keyword] += 1
 
@@ -126,6 +129,11 @@ def _build_metrics(
                 count
                 for occurred_date, count in daily_counts[keyword].items()
                 if recent_start <= occurred_date <= week_end
+            ),
+            keyword_quality_score=(
+                sum(quality_scores[keyword]) / len(quality_scores[keyword])
+                if quality_scores[keyword]
+                else 0.0
             ),
         )
         for keyword in keywords

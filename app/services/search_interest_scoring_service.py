@@ -36,7 +36,7 @@ class ProviderScore:
 class CombinedSearchScore:
     google_score: float | None
     naver_score: float | None
-    combined_score: float
+    combined_score: float | None
     provider_count: int
     coverage_score: float
     current_average: float
@@ -109,7 +109,9 @@ def recalculate_search_interest(session: Session) -> SearchInterestRecalculation
         )
         if combined.provider_count > 0:
             validated += 1
-        rescore_weekly_trend(trend, combined.combined_score)
+        rescore_weekly_trend(
+            trend, combined.combined_score, provider_count=combined.provider_count
+        )
         updated += 1
 
     session.commit()
@@ -170,14 +172,14 @@ def combine_provider_scores(scores: dict[str, ProviderScore]) -> CombinedSearchS
     elif provider_count == 1:
         combined_score = present[0].provider_score
     else:
-        combined_score = 50.0
+        combined_score = None
     current_average = _average(score.current_average for score in present)
     previous_average = _average(score.previous_average for score in present)
     growth_rate = calculate_search_growth_rate(current_average, previous_average)
     return CombinedSearchScore(
         google_score=google.provider_score if google else None,
         naver_score=naver.provider_score if naver else None,
-        combined_score=round(_clamp(combined_score), 2),
+        combined_score=round(_clamp(combined_score), 2) if combined_score is not None else None,
         provider_count=provider_count,
         coverage_score=float(provider_count * 50),
         current_average=round(current_average, 2),

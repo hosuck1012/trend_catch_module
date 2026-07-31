@@ -8,6 +8,7 @@ from app.repositories.entity_repository import (
     get_entity_summary,
     get_latest_links_for_keyword,
 )
+from app.repositories.context_repository import get_primary_context_metadata_for_keyword
 from app.schemas.entity import (
     EntityExtractionResponse,
     EntityModelStatusResponse,
@@ -81,6 +82,11 @@ def by_keyword(
     if trend is None:
         raise HTTPException(status_code=404, detail="키워드 트렌드를 찾을 수 없습니다.")
     primary = next((link for link in links if link.is_primary), None)
+    primary_context = get_primary_context_metadata_for_keyword(
+        session,
+        keyword=trend.keyword,
+        week_start=trend.week_start,
+    )
     return {
         "keyword": trend.keyword,
         "week_start": trend.week_start,
@@ -112,4 +118,7 @@ def by_keyword(
             if links
             else "아직 객체 연결 결과가 없습니다. POST /api/entities/link-trends를 실행하세요."
         ),
+        "context_available": primary_context is not None,
+        "context_provider": primary_context.provider if primary_context else None,
+        "context_page_title": primary_context.page_title if primary_context else None,
     }

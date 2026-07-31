@@ -22,7 +22,7 @@ class SearchValidationResult(Base):
     week_end: Mapped[date] = mapped_column(Date)
     google_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     naver_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    combined_score: Mapped[float] = mapped_column(Float)
+    combined_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     provider_count: Mapped[int] = mapped_column(Integer)
     coverage_score: Mapped[float] = mapped_column(Float)
     current_average: Mapped[float] = mapped_column(Float)

@@ -9,6 +9,9 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.resolve().as_posix()}"
 os.environ["SCHEDULER_ENABLED"] = "false"
 os.environ["RUN_COLLECTION_ON_STARTUP"] = "false"
 os.environ["NER_ENABLED"] = "false"
+os.environ["WIKIPEDIA_ENABLED"] = "true"
+os.environ["GEMINI_ENABLED"] = "false"
+os.environ["KEYWORD_ENABLE_KIWI"] = "false"
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.config import get_settings  # noqa: E402

@@ -74,3 +74,6 @@ class KeywordEntityResponse(BaseModel):
     primary_entity: PrimaryEntityResponse | None
     entities: list[KeywordEntityItemResponse]
     message: str | None = None
+    context_available: bool = False
+    context_provider: str | None = None
+    context_page_title: str | None = None

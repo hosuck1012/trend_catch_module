@@ -8,6 +8,8 @@ from app.models.keyword_occurrence import KeywordOccurrence
 from app.models.source_document import SourceDocument
 from app.services.keyword_extraction_service import ExtractedKeyword, extract_keywords_from_document
 from app.services.keyword_normalization_service import normalize_keyword
+from app.config import get_settings
+from app.services.keyword_extraction_v2_service import analyze_documents, persist_new_occurrences
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,12 @@ class KeywordDetail:
 
 def extract_keywords_for_documents(session: Session) -> KeywordExtractionResult:
     documents = session.scalars(select(SourceDocument).order_by(SourceDocument.id)).all()
+    if get_settings().keyword_pipeline_version == "v2":
+        analysis = analyze_documents(list(documents))
+        processed, skipped, inserted = persist_new_occurrences(
+            session, list(documents), analysis
+        )
+        return KeywordExtractionResult(processed, skipped, inserted)
     processed_documents = 0
     skipped_documents = 0
     inserted_occurrences = 0

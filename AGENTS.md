@@ -45,6 +45,8 @@ C:\Users\owner\Desktop\Travelen
 - feedparser
 - python-multipart
 - GLiNER 0.2.x (`urchade/gliner_multi-v2.1`)
+- Google Gen AI SDK (`google-genai`)
+- Streamlit, pandas, Plotly
 
 GLiNER는 현재 설치 및 구현되어 있다. 모델은 NER 최초 요청 때 lazy loading하며 Hugging Face 캐시를 사용한다.
 
@@ -58,6 +60,7 @@ GLiNER는 현재 설치 및 구현되어 있다. 모델은 NER 최초 요청 때
 - `app/collectors`: YouTube 공식 API와 허용된 뉴시스 RSS의 외부 요청·파싱
 - `app/scheduler`: APScheduler 작업 등록, 실행 및 종료 관리
 - `app/ner`: GLiNER adapter, 객체 label, 지역 사전, 규칙 및 겹침 해결
+- `dashboard`: FastAPI REST API만 사용하는 독립형 Streamlit 대시보드와 화면 컴포넌트
 - `tests`: 운영 DB와 분리된 테스트 DB를 사용하는 API·서비스 테스트
 - `samples`: 합성 Google Trends 및 네이버 데이터랩 CSV 예시
 - `data`: 한국 지역명 및 alias 사전
@@ -77,11 +80,14 @@ Mock / YouTube / Newsis RSS 수집
 -> weekly_trend / watchlist / stable / insufficient_data 분류
 -> Google Trends 또는 네이버 데이터랩 CSV·수동 관측 입력
 -> 검색 관심도 점수 및 WeeklyTrend final_score 재계산
+-> NER 객체 및 Wikipedia/수동 맥락 연결
+-> 설정된 경우 기존 근거 기반 Gemini 트렌드 설명 생성
+-> Streamlit 대시보드에서 결과 조회 및 명시적인 단일 키워드 AI 분석 실행
 ```
 
 APScheduler는 수집·키워드 추출과 주간 계산 작업을 지원하지만 기본 설정에서는 비활성화된다. NER 추출, 객체 요약, 트렌드-객체 연결도 구현되어 있으며 현재는 명시적 API 호출로 실행한다.
 
-위키 맥락 보강, Gemini 설명 생성, 실제 여행지 매핑, Travelen 연동은 아직 구현되지 않았다.
+Gemini는 기존 DB 근거를 해석하는 선택 기능이며 기본 설정에서는 비활성화된다. Streamlit 대시보드는 DB에 직접 접근하지 않고 FastAPI 읽기 API를 사용한다. 실제 여행지 데이터 매핑은 아직 구현되지 않았다.
 
 # 6. Entity Types
 
@@ -129,7 +135,7 @@ LLM이나 NER 모델은 통계 점수, `final_score`, 트렌드 순위 또는 st
 - Google Trends 웹페이지를 자동 크롤링하지 않고 `pytrends`를 사용하지 않는다.
 - 네이버 데이터랩 자동 연동 권한이 없으면 현재 CSV·수동 입력 구조를 유지한다.
 - 나무위키는 향후 맥락 보조 자료로만 사용하고 단독 사실 근거로 확정하지 않는다.
-- Gemini는 향후 상위 키워드 설명과 여행 관련성 보조에만 사용하며 순위 계산에는 사용하지 않는다.
+- Gemini는 상위 키워드 설명과 여행 관련성 보조에만 사용하며 순위 계산, 원본 수치 변경 또는 외부 검색에는 사용하지 않는다.
 - GLiNER는 lazy loading하고 프로세스 내 인스턴스를 재사용한다. 모델 로딩 실패가 FastAPI 서버 전체를 중단시키지 않게 한다.
 
 # 9. Required Commands
@@ -220,15 +226,18 @@ http://127.0.0.1:8000/docs
 - APScheduler 자동 수집·주간 계산, 수동 실행 및 실행 이력
 - GLiNER lazy loading, 한국 지역명 사전, 규칙 보정 및 객체 병합
 - `EntityMention` 저장, 객체 요약, `TrendEntityLink` 계산 및 조회
+- 한국어 Wikipedia 공식 API 기반 객체 맥락 후보 검색·요약 저장
+- 나무위키 URL 및 짧은 맥락의 사용자 수동 입력
+- `EntityContext` 저장과 주간 트렌드 `TrendContextLink` 연결
+- `google-genai` 구조화 출력 기반 트렌드 설명, 근거 참조 검증 및 여행 추천 보정
+- FastAPI 대시보드 집계 API와 독립형 Streamlit 분석 대시보드
 - 독립 테스트 DB와 외부 요청·모델 mock 테스트
 
 ## Planned
 
-- 위키백과 및 나무위키 맥락 보강
-- Gemini 기반 상위 키워드 설명과 여행 관련성 보조
+- 추가 Wikipedia provider 및 맥락 품질 검증 고도화
+- Gemini 분석 품질 검증 및 운영 사용량 관측
 - 객체를 실제 여행지 데이터와 매핑하는 검증 계층
-- 대시보드
-- Travelen 프론트엔드 및 서비스 연동
 - 배포·운영 관측 체계
 
 # 14. Final Verification

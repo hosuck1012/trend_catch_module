@@ -1,0 +1,16 @@
+http
+https
+www
+com
+net
+org
+co
+kr
+html
+htm
+php
+amp
+utm
+source
+medium
+campaign

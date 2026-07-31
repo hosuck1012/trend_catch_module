@@ -279,7 +279,7 @@ def test_single_provider_combined_score() -> None:
     assert combined.coverage_score == 50
 
 
-def test_no_provider_data_keeps_neutral_score(client, db_session) -> None:
+def test_no_provider_data_keeps_search_score_null(client, db_session) -> None:
     _prepare_trends(client)
 
     response = client.post("/api/search-interest/recalculate")
@@ -290,9 +290,10 @@ def test_no_provider_data_keeps_neutral_score(client, db_session) -> None:
     )
 
     assert response.status_code == 200
-    assert trend is not None and trend.search_interest_score == 50
+    assert trend is not None and trend.search_interest_score is None
+    assert trend.search_interest_available is False
     assert validation is not None
-    assert validation.combined_score == 50
+    assert validation.combined_score is None
     assert validation.provider_count == 0
 
 
@@ -341,7 +342,7 @@ def test_final_score_is_recalculated(client, db_session) -> None:
     )
 
     assert trend.final_score == expected
-    assert trend.final_score > before
+    assert trend.final_score != before
 
 
 def test_search_interest_status_api(client) -> None:

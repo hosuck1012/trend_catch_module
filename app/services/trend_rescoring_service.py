@@ -2,8 +2,19 @@ from app.models.weekly_trend import WeeklyTrend
 from app.services.trend_scoring_service import calculate_final_score
 
 
-def rescore_weekly_trend(trend: WeeklyTrend, search_interest_score: float) -> None:
-    trend.search_interest_score = round(max(0.0, min(100.0, search_interest_score)), 2)
+def rescore_weekly_trend(
+    trend: WeeklyTrend,
+    search_interest_score: float | None,
+    *,
+    provider_count: int = 0,
+) -> None:
+    trend.search_interest_score = (
+        round(max(0.0, min(100.0, search_interest_score)), 2)
+        if search_interest_score is not None
+        else None
+    )
+    trend.search_interest_available = search_interest_score is not None and provider_count > 0
+    trend.search_provider_count = provider_count
     trend.final_score = round(
         calculate_final_score(
             volume_score=trend.volume_score,

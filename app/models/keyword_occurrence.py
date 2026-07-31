@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -24,5 +24,7 @@ class KeywordOccurrence(Base):
     normalized_keyword: Mapped[str] = mapped_column(String(255), index=True)
     source: Mapped[str] = mapped_column(String(50), index=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    keyword_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pipeline_version: Mapped[str] = mapped_column(String(20), default="legacy")
 
     document: Mapped["SourceDocument"] = relationship(back_populates="keyword_occurrences")

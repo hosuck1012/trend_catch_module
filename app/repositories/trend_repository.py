@@ -14,6 +14,7 @@ class OccurrenceRow:
     keyword: str
     source: str
     occurred_date: date
+    keyword_quality_score: float | None = None
 
 
 def get_latest_occurrence_date(session: Session) -> date | None:
@@ -31,6 +32,7 @@ def get_occurrences_between(
             KeywordOccurrence.normalized_keyword,
             KeywordOccurrence.source,
             func.date(KeywordOccurrence.occurred_at),
+            KeywordOccurrence.keyword_quality_score,
         )
         .where(
             func.date(KeywordOccurrence.occurred_at) >= start_date.isoformat(),
@@ -43,6 +45,7 @@ def get_occurrences_between(
             keyword=row.normalized_keyword,
             source=row.source,
             occurred_date=date.fromisoformat(row[2]),
+            keyword_quality_score=row[3],
         )
         for row in rows
     ]
@@ -54,6 +57,7 @@ def upsert_weekly_trends(
     week_start: date,
     week_end: date,
     scores: list[KeywordTrendScore],
+    commit: bool = True,
 ) -> None:
     calculated_at = datetime.now()
     existing_by_keyword = {
@@ -80,14 +84,20 @@ def upsert_weekly_trends(
         trend.freshness_score = score.freshness_score
         trend.volume_score = score.volume_score
         trend.growth_score = score.growth_score
+        trend.trend_score = score.trend_score
+        trend.keyword_quality_score = score.keyword_quality_score
         trend.search_interest_score = score.search_interest_score
+        trend.search_interest_available = score.search_interest_available
+        trend.search_provider_count = score.search_provider_count
         trend.one_day_spike_penalty = score.one_day_spike_penalty
         trend.spam_penalty = score.spam_penalty
         trend.final_score = score.final_score
         trend.status = score.status
         trend.calculated_at = calculated_at
+        trend.pipeline_version = "v2" if score.keyword_quality_score > 0 else "legacy"
 
-    session.commit()
+    if commit:
+        session.commit()
 
 
 def get_latest_week_range(session: Session) -> tuple[date, date] | None:

@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 
 KNOWN_SOURCE_COUNT = 2
-SEARCH_INTEREST_NEUTRAL_SCORE = 50.0
 
 
 @dataclass(frozen=True)
@@ -14,6 +13,7 @@ class KeywordMetricsInput:
     source_count: int
     peak_day_mentions: int
     recent_mentions: int
+    keyword_quality_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,11 @@ class KeywordTrendScore:
     freshness_score: float
     volume_score: float
     growth_score: float
-    search_interest_score: float
+    trend_score: float
+    keyword_quality_score: float
+    search_interest_score: float | None
+    search_interest_available: bool
+    search_provider_count: int
     one_day_spike_penalty: float
     spam_penalty: float
     final_score: float
@@ -60,8 +64,7 @@ def score_keyword(metrics: KeywordMetricsInput, max_weekly_mentions: int) -> Key
         else 0.0
     )
     growth_score = growth_rate_to_score(growth_rate)
-    # 외부 검색 트렌드 API 연동 전 임시 중립값
-    search_interest_score = SEARCH_INTEREST_NEUTRAL_SCORE
+    search_interest_score = None
     one_day_spike_penalty = calculate_one_day_spike_penalty(peak_day_share)
     spam_penalty = calculate_spam_penalty(metrics.keyword)
     final_score = calculate_final_score(
@@ -74,6 +77,7 @@ def score_keyword(metrics: KeywordMetricsInput, max_weekly_mentions: int) -> Key
         one_day_spike_penalty=one_day_spike_penalty,
         spam_penalty=spam_penalty,
     )
+    trend_score = final_score
     status = classify_status(
         weekly_mentions=metrics.weekly_mentions,
         previous_weekly_mentions=metrics.previous_weekly_mentions,
@@ -96,7 +100,11 @@ def score_keyword(metrics: KeywordMetricsInput, max_weekly_mentions: int) -> Key
         freshness_score=round(freshness_score, 2),
         volume_score=round(volume_score, 2),
         growth_score=round(growth_score, 2),
-        search_interest_score=round(search_interest_score, 2),
+        trend_score=round(trend_score, 2),
+        keyword_quality_score=round(metrics.keyword_quality_score, 2),
+        search_interest_score=None,
+        search_interest_available=False,
+        search_provider_count=0,
         one_day_spike_penalty=round(one_day_spike_penalty, 2),
         spam_penalty=round(spam_penalty, 2),
         final_score=round(final_score, 2),
@@ -134,18 +142,24 @@ def calculate_final_score(
     growth_score: float,
     persistence_score: float,
     diversity_score: float,
-    search_interest_score: float,
+    search_interest_score: float | None,
     freshness_score: float,
     one_day_spike_penalty: float,
     spam_penalty: float,
 ) -> float:
+    components = [
+        (volume_score, 0.25),
+        (growth_score, 0.25),
+        (persistence_score, 0.20),
+        (diversity_score, 0.15),
+        (freshness_score, 0.05),
+    ]
+    if search_interest_score is not None:
+        components.append((search_interest_score, 0.10))
+    weight_sum = sum(weight for _, weight in components)
+    weighted = sum(score * weight for score, weight in components) / weight_sum
     return clamp(
-        volume_score * 0.25
-        + growth_score * 0.25
-        + persistence_score * 0.20
-        + diversity_score * 0.15
-        + search_interest_score * 0.10
-        + freshness_score * 0.05
+        weighted
         - one_day_spike_penalty
         - spam_penalty
     )

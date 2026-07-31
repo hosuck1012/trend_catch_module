@@ -9,6 +9,8 @@ from app.repositories.trend_repository import (
 )
 from app.repositories.search_interest_repository import get_validations_for_week
 from app.repositories.entity_repository import get_link_metadata_for_week
+from app.repositories.context_repository import get_context_metadata_for_week
+from app.repositories.trend_ai_repository import get_ai_metadata_for_week
 from app.schemas.trend import (
     TrendListResponse,
     TrendRecalculateResponse,
@@ -18,6 +20,9 @@ from app.services.trend_calculation_service import (
     NoKeywordOccurrencesError,
     recalculate_weekly_trends,
 )
+from app.config import get_settings
+from app.keywords.stopword_filter import rejection_reason
+from app.keywords.keyword_quality import is_numeric_artifact
 
 
 router = APIRouter(prefix="/api/trends", tags=["trends"])
@@ -105,28 +110,60 @@ def _trend_list_response(
         week_start=week_start,
         keywords=[trend.keyword for trend in trends],
     )
+    context_metadata = get_context_metadata_for_week(
+        session,
+        week_start=week_start,
+        keywords=[trend.keyword for trend in trends],
+    )
+    ai_metadata = get_ai_metadata_for_week(
+        session,
+        week_start=week_start,
+        keywords=[trend.keyword for trend in trends],
+    )
     return {
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
         "total": len(trends),
+        "pipeline_version": get_settings().keyword_pipeline_version,
         "items": [
             _trend_item_response(
                 index,
                 trend,
                 validations.get(trend.keyword),
                 entity_metadata.get(trend.keyword),
+                context_metadata.get(trend.keyword),
+                ai_metadata.get(trend.keyword),
             )
             for index, trend in enumerate(trends, start=1)
         ],
     }
 
 
-def _trend_item_response(index, trend, validation, entity_metadata=None) -> dict[str, object]:
+def _trend_item_response(
+    index,
+    trend,
+    validation,
+    entity_metadata=None,
+    context_metadata=None,
+    ai_metadata=None,
+) -> dict[str, object]:
     primary_entity, primary_entity_type, travel_count = entity_metadata or (
         None,
         None,
         0,
     )
+    context_title, context_provider, context_available = context_metadata or (
+        None,
+        None,
+        False,
+    )
+    (
+        ai_available,
+        ai_summary,
+        travel_score,
+        travel_level,
+        destination_count,
+    ) = ai_metadata or (False, None, None, None, 0)
     return {
         "rank": index,
         "keyword": trend.keyword,
@@ -136,9 +173,14 @@ def _trend_item_response(index, trend, validation, entity_metadata=None) -> dict
         "source_count": trend.source_count,
         "growth_rate": trend.growth_rate,
         "peak_day_share": trend.peak_day_share,
-        "final_score": trend.final_score,
+        "final_score": trend.final_score if trend.trend_score is not None else None,
+        "trend_score": trend.trend_score,
+        "keyword_quality_score": trend.keyword_quality_score,
         "status": trend.status,
-        "search_interest_score": trend.search_interest_score,
+        "search_interest_score": (
+            trend.search_interest_score if trend.search_interest_available else None
+        ),
+        "search_interest_available": trend.search_interest_available,
         "search_provider_count": validation.provider_count if validation else 0,
         "search_coverage_score": validation.coverage_score if validation else 0.0,
         "google_trends_score": validation.google_score if validation else None,
@@ -146,4 +188,18 @@ def _trend_item_response(index, trend, validation, entity_metadata=None) -> dict
         "primary_entity": primary_entity,
         "primary_entity_type": primary_entity_type,
         "travel_entity_count": travel_count,
+        "primary_context_title": context_title,
+        "primary_context_provider": context_provider,
+        "context_available": context_available,
+        "ai_analysis_available": ai_available,
+        "ai_trend_summary": ai_summary,
+        "travel_relevance_score": travel_score,
+        "travel_relevance_level": travel_level,
+        "recommended_destination_count": destination_count,
+        "pipeline_version": trend.pipeline_version,
+        "suspicious": bool(
+            rejection_reason(trend.keyword, trend.keyword.lower().replace(" ", ""))
+            or len(trend.keyword.replace(" ", "")) <= 1
+            or is_numeric_artifact(trend.keyword)
+        ),
     }
