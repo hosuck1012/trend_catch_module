@@ -50,9 +50,10 @@ class KeywordDetail:
 def extract_keywords_for_documents(session: Session) -> KeywordExtractionResult:
     documents = session.scalars(select(SourceDocument).order_by(SourceDocument.id)).all()
     if get_settings().keyword_pipeline_version == "v2":
-        analysis = analyze_documents(list(documents))
+        document_list = list(documents)
+        analysis = analyze_documents(document_list, now=_analysis_now(document_list))
         processed, skipped, inserted = persist_new_occurrences(
-            session, list(documents), analysis
+            session, document_list, analysis
         )
         return KeywordExtractionResult(processed, skipped, inserted)
     processed_documents = 0
@@ -181,3 +182,7 @@ def _get_sources(session: Session, normalized_keyword: str) -> list[str]:
             .order_by(KeywordOccurrence.source)
         ).all()
     )
+
+
+def _analysis_now(documents: list[SourceDocument]) -> datetime:
+    return max((document.published_at for document in documents), default=datetime.now())

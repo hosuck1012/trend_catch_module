@@ -1,0 +1,391 @@
+from datetime import date, datetime
+
+from sqlalchemy import func, select
+
+from app.context_v2.context_extractor import extract_keyword_contexts
+from app.context_v2.sentence_splitter import split_sentences
+from app.context_v2.travel_rules import EntitySignal, TrendSignal, evaluate_travel_rules, load_terms
+from app.models.entity_mention import EntityMention
+from app.models.keyword_context import KeywordContext
+from app.models.keyword_occurrence import KeywordOccurrence
+from app.models.source_document import SourceDocument
+from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
+from app.models.weekly_trend import WeeklyTrend
+from app.repositories.travel_opportunity_repository import summarize_v2
+from app.services.keyword_context_service import build_keyword_contexts
+from app.services.travel_prefilter_service import prefilter_travel_opportunities
+
+
+WEEK_START = date(2026, 7, 27)
+WEEK_END = date(2026, 8, 2)
+NOW = datetime(2026, 8, 1, 9, 0, 0)
+
+
+def test_korean_sentence_splitter_handles_quotes_and_newlines() -> None:
+    text = "첫 문장입니다.\n이번 주 영화는 '8월의 크리스마스'입니다. 다음 문장입니다!"
+    assert split_sentences(text) == [
+        "첫 문장입니다.",
+        "이번 주 영화는 '8월의 크리스마스'입니다.",
+        "다음 문장입니다!",
+    ]
+
+
+def test_english_sentence_splitter() -> None:
+    text = 'First sentence. "Second sentence?" Third sentence!'
+    assert split_sentences(text) == ["First sentence.", '"Second sentence?"', "Third sentence!"]
+
+
+def test_previous_matched_next_extraction() -> None:
+    contexts = extract_keyword_contexts(
+        text="이전 문장입니다. 현재 8월의 크리스마스 영화입니다. 다음 문장입니다.",
+        keyword="8월의 크리스마스",
+        normalized_keyword="8월의크리스마스",
+        sentences_before=1,
+        sentences_after=1,
+        max_chars=1500,
+    )
+    assert contexts[0].previous_sentence == "이전 문장입니다."
+    assert contexts[0].matched_sentence == "현재 8월의 크리스마스 영화입니다."
+    assert contexts[0].next_sentence == "다음 문장입니다."
+
+
+def test_context_extraction_at_document_start_and_end() -> None:
+    start = extract_keyword_contexts(
+        text="부산불꽃축제가 열립니다. 다음 문장입니다.",
+        keyword="부산불꽃축제",
+        normalized_keyword="부산불꽃축제",
+        sentences_before=1,
+        sentences_after=1,
+        max_chars=1500,
+    )[0]
+    end = extract_keyword_contexts(
+        text="이전 문장입니다. 마지막은 두바이 초콜릿입니다.",
+        keyword="두바이 초콜릿",
+        normalized_keyword="두바이초콜릿",
+        sentences_before=1,
+        sentences_after=1,
+        max_chars=1500,
+    )[0]
+    assert start.previous_sentence is None
+    assert end.next_sentence is None
+
+
+def test_multiple_occurrences_and_context_hash_deduplication() -> None:
+    contexts = extract_keyword_contexts(
+        text="성수동 카페가 인기입니다. 두바이 초콜릿이 유행입니다. 다른 문장입니다. 두바이 초콜릿 디저트가 확산됩니다.",
+        keyword="두바이 초콜릿",
+        normalized_keyword="두바이초콜릿",
+        sentences_before=1,
+        sentences_after=1,
+        max_chars=1500,
+    )
+    assert len(contexts) == 2
+    assert len({context.context_hash for context in contexts}) == 2
+
+
+def test_context_length_limit() -> None:
+    contexts = extract_keyword_contexts(
+        text=f"{'가' * 300}. 키워드가 포함된 문장입니다. {'나' * 300}.",
+        keyword="키워드",
+        normalized_keyword="키워드",
+        sentences_before=1,
+        sentences_after=1,
+        max_chars=80,
+    )
+    assert len(contexts[0].combined_context) <= 80
+    assert "키워드" in contexts[0].combined_context
+
+
+def test_content_title_film_rule_review_or_better() -> None:
+    result = evaluate_travel_rules(
+        keyword="8월의 크리스마스",
+        context="1998년 개봉한 허진호 감독의 영화 작품이 다시 소개되고 있다.",
+        entities=[EntitySignal("8월의 크리스마스", "8월의크리스마스", "CONTENT_TITLE", 95, True)],
+        trend=TrendSignal(weekly_mentions=5, final_score=90, source_count=2, document_count=2),
+    )
+    assert result.travel_category == "FILM_LOCATION"
+    assert result.prefilter_status in {"review", "strong"}
+    assert "CONTENT_TITLE_WITH_FILM_CONTEXT" in result.reasoning_codes
+
+
+def test_event_festival_rule_can_be_strong() -> None:
+    result = evaluate_travel_rules(
+        keyword="부산불꽃축제",
+        context="부산 광안리에서 열리는 부산불꽃축제가 올해도 개최된다.",
+        entities=[
+            EntitySignal("부산불꽃축제", "부산불꽃축제", "EVENT", 99, True),
+            EntitySignal("부산", "부산", "LOCATION", 90, False),
+            EntitySignal("광안리", "광안리", "PLACE", 90, False),
+        ],
+        trend=TrendSignal(weekly_mentions=8, final_score=95, source_count=3, document_count=3),
+    )
+    assert result.travel_category == "FESTIVAL"
+    assert result.prefilter_status == "strong"
+
+
+def test_food_place_and_region_meme_rules() -> None:
+    food = evaluate_travel_rules(
+        keyword="두바이 초콜릿",
+        context="두바이 초콜릿 디저트가 성수동 카페를 중심으로 유행하고 있다.",
+        entities=[EntitySignal("두바이 초콜릿", "두바이초콜릿", "FOOD", 90, True)],
+        trend=TrendSignal(final_score=80, source_count=2, document_count=2),
+    )
+    place = evaluate_travel_rules(
+        keyword="광안리",
+        context="광안리 해변 여행과 방문 관심이 늘고 있다.",
+        entities=[EntitySignal("광안리", "광안리", "PLACE", 90, True)],
+        trend=TrendSignal(final_score=70, source_count=2, document_count=2),
+    )
+    meme = evaluate_travel_rules(
+        keyword="거제야호",
+        context="거제야호 밈으로 거제 여행 관심이 높아졌다.",
+        entities=[
+            EntitySignal("거제야호", "거제야호", "MEME", 90, True),
+            EntitySignal("거제", "거제", "LOCATION", 80, False),
+        ],
+        trend=TrendSignal(final_score=80, source_count=2, document_count=2),
+    )
+    assert food.travel_category == "FOOD"
+    assert "FOOD_TREND" in food.reasoning_codes
+    assert place.travel_category in {"NATURE", "LOCAL_CULTURE", "LANDMARK"}
+    assert "PLACE_TREND" in place.reasoning_codes
+    assert meme.travel_category == "REGIONAL_MEME"
+
+
+def test_brand_finance_and_person_legal_reject() -> None:
+    brand = evaluate_travel_rules(
+        keyword="삼성전자",
+        context="삼성전자 2분기 영업이익과 주가 전망이 발표됐다.",
+        entities=[EntitySignal("삼성전자", "삼성전자", "BRAND", 90, True)],
+        trend=TrendSignal(final_score=99, source_count=3, document_count=3),
+    )
+    person = evaluate_travel_rules(
+        keyword="어떤 연예인",
+        context="해당 연예인의 법적 분쟁 관련 재판이 진행됐다.",
+        entities=[EntitySignal("어떤 연예인", "어떤연예인", "PERSON", 90, True)],
+        trend=TrendSignal(final_score=99, source_count=3, document_count=3),
+    )
+    assert brand.prefilter_status == "rejected"
+    assert "FINANCE_CONTEXT" in brand.reasoning_codes
+    assert person.prefilter_status == "rejected"
+    assert "LEGAL_CONTEXT" in person.reasoning_codes
+
+
+def test_positive_negative_scoring_and_score_range() -> None:
+    positive = evaluate_travel_rules(
+        keyword="테스트 축제",
+        context="지역 축제 공연 전시 체험 관광 방문 명소 카페 시장 해변 섬 산 공원",
+        entities=[EntitySignal("테스트 축제", "테스트축제", "EVENT", 90, True)],
+        trend=TrendSignal(final_score=100, source_count=5, document_count=5),
+    )
+    negative = evaluate_travel_rules(
+        keyword="테스트",
+        context="주가 실적 투자 재판 소송 사고",
+        entities=[EntitySignal("테스트", "테스트", "BRAND", 90, True)],
+        trend=TrendSignal(final_score=100, source_count=5, document_count=5),
+    )
+    assert positive.positive_context_score == 30
+    assert negative.negative_context_penalty == 40
+    assert 0 <= positive.travel_pre_score <= 100
+    assert 0 <= negative.travel_pre_score <= 100
+
+
+def test_prefilter_status_boundaries() -> None:
+    rejected = evaluate_travel_rules(
+        keyword="무신호",
+        context="일반 문장입니다.",
+        entities=[],
+        trend=TrendSignal(final_score=0, source_count=1, document_count=1),
+    )
+    weak = evaluate_travel_rules(
+        keyword="광안리",
+        context="광안리 소식입니다.",
+        entities=[EntitySignal("광안리", "광안리", "PLACE", 90, True)],
+        trend=TrendSignal(final_score=50, source_count=1, document_count=1),
+    )
+    review = evaluate_travel_rules(
+        keyword="8월의 크리스마스",
+        context="영화 개봉 감독 작품",
+        entities=[EntitySignal("8월의 크리스마스", "8월의크리스마스", "CONTENT_TITLE", 90, True)],
+        trend=TrendSignal(final_score=75, source_count=2, document_count=2),
+    )
+    strong = evaluate_travel_rules(
+        keyword="부산불꽃축제",
+        context="부산 축제 개최 여행 방문 명소 공연",
+        entities=[EntitySignal("부산불꽃축제", "부산불꽃축제", "EVENT", 90, True)],
+        trend=TrendSignal(final_score=100, source_count=3, document_count=3),
+    )
+    assert rejected.prefilter_status == "rejected"
+    assert weak.prefilter_status == "weak"
+    assert review.prefilter_status == "review"
+    assert strong.prefilter_status == "strong"
+
+
+def test_build_context_dry_run_and_db_unchanged(client, db_session) -> None:
+    _seed_travel(db_session)
+    before = db_session.scalar(select(func.count(KeywordContext.id))) or 0
+    response = client.post("/api/travel-opportunities/build-contexts?dry_run=true")
+    db_session.expire_all()
+    assert response.status_code == 200
+    assert response.json()["contexts_would_create"] >= 1
+    assert (db_session.scalar(select(func.count(KeywordContext.id))) or 0) == before
+
+
+def test_context_hash_duplicate_prevention(db_session) -> None:
+    _seed_travel(db_session)
+    first = build_keyword_contexts(db_session, week_start=WEEK_START, limit=50, force=False, dry_run=False)
+    second = build_keyword_contexts(db_session, week_start=WEEK_START, limit=50, force=False, dry_run=False)
+    assert first.contexts_would_create >= 1
+    assert second.duplicate_contexts >= first.contexts_would_create
+
+
+def test_prefilter_dry_run_db_unchanged_and_gemini_not_called(monkeypatch, client, db_session) -> None:
+    _seed_travel(db_session)
+    before = db_session.scalar(select(func.count(TravelOpportunityCandidate.id))) or 0
+
+    async def forbidden_generate(*_args, **_kwargs):
+        raise AssertionError("Gemini must not run during V2 prefilter")
+
+    monkeypatch.setattr("app.ai.gemini_adapter.GeminiAdapter.generate", forbidden_generate)
+    response = client.post("/api/travel-opportunities/prefilter?dry_run=true")
+    db_session.expire_all()
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processed"] >= 1
+    assert "reduction_rate" in payload
+    assert (db_session.scalar(select(func.count(TravelOpportunityCandidate.id))) or 0) == before
+
+
+def test_summary_calculation_for_dashboard(db_session) -> None:
+    _seed_travel(db_session)
+    build_keyword_contexts(db_session, week_start=WEEK_START, limit=50, force=False, dry_run=False)
+    prefilter_travel_opportunities(db_session, week_start=WEEK_START, dry_run=False, force=True, limit=50)
+    summary = summarize_v2(db_session, week_start=WEEK_START)
+    assert summary["raw_keyword_count"] == 2
+    assert summary["quality_keyword_count"] == 2
+    assert summary["context_candidate_count"] >= 2
+    assert summary["estimated_gemini_calls"] == summary["strong_candidate_count"]
+    assert 0 <= summary["llm_reduction_rate"] <= 100
+
+
+def test_positive_and_negative_term_files_have_terms() -> None:
+    assert len(load_terms("travel_positive_terms.json")) >= 30
+    assert len(load_terms("travel_negative_terms.json")) >= 20
+
+
+def _seed_travel(session) -> None:
+    film = SourceDocument(
+        source="newsis_rss",
+        source_id="film-doc",
+        title="8월의 크리스마스 재조명",
+        text="1998년 개봉한 허진호 감독의 영화 '8월의 크리스마스'가 다시 소개되고 있다.",
+        published_at=NOW,
+        collected_at=NOW,
+        views=None,
+        likes=None,
+        comments=None,
+        url="https://example.test/film",
+    )
+    finance = SourceDocument(
+        source="youtube",
+        source_id="finance-doc",
+        title="삼성전자 실적",
+        text="삼성전자 2분기 영업이익과 주가 전망이 발표됐다.",
+        published_at=NOW,
+        collected_at=NOW,
+        views=100,
+        likes=1,
+        comments=1,
+        url="https://example.test/finance",
+    )
+    session.add_all([film, finance])
+    session.flush()
+    session.add_all(
+        [
+            KeywordOccurrence(
+                document_id=film.id,
+                keyword="8월의 크리스마스",
+                normalized_keyword="8월의크리스마스",
+                source="newsis_rss",
+                occurred_at=NOW,
+                keyword_quality_score=90,
+                pipeline_version="v2",
+            ),
+            KeywordOccurrence(
+                document_id=finance.id,
+                keyword="삼성전자",
+                normalized_keyword="삼성전자",
+                source="youtube",
+                occurred_at=NOW,
+                keyword_quality_score=90,
+                pipeline_version="v2",
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            _trend("8월의크리스마스", 90, 2),
+            _trend("삼성전자", 90, 3),
+        ]
+    )
+    session.add_all(
+        [
+            EntityMention(
+                document_id=film.id,
+                text="8월의 크리스마스",
+                normalized_text="8월의크리스마스",
+                entity_type="CONTENT_TITLE",
+                confidence=0.95,
+                extractor="rule",
+                start_char=28,
+                end_char=37,
+                source="newsis_rss",
+                occurred_at=NOW,
+                created_at=NOW,
+            ),
+            EntityMention(
+                document_id=finance.id,
+                text="삼성전자",
+                normalized_text="삼성전자",
+                entity_type="BRAND",
+                confidence=0.95,
+                extractor="rule",
+                start_char=0,
+                end_char=4,
+                source="youtube",
+                occurred_at=NOW,
+                created_at=NOW,
+            ),
+        ]
+    )
+    session.commit()
+
+
+def _trend(keyword: str, final_score: float, source_count: int) -> WeeklyTrend:
+    return WeeklyTrend(
+        keyword=keyword,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        weekly_mentions=5,
+        previous_weekly_mentions=1,
+        active_days=3,
+        source_count=source_count,
+        growth_rate=2.0,
+        peak_day_share=0.4,
+        persistence_score=70,
+        diversity_score=60,
+        freshness_score=80,
+        volume_score=75,
+        growth_score=70,
+        trend_score=75,
+        keyword_quality_score=90,
+        search_interest_score=None,
+        search_interest_available=False,
+        search_provider_count=0,
+        one_day_spike_penalty=0,
+        spam_penalty=0,
+        final_score=final_score,
+        status="weekly_trend",
+        calculated_at=NOW,
+        pipeline_version="v2",
+    )

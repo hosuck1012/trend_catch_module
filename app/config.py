@@ -61,6 +61,14 @@ class Settings:
     gemini_max_output_tokens: int
     gemini_analysis_cache_hours: int
     gemini_max_items_per_run: int
+    travel_opportunity_v2_enabled: bool
+    context_sentences_before: int
+    context_sentences_after: int
+    context_max_chars: int
+    travel_prefilter_enabled: bool
+    travel_prefilter_min_score: int
+    travel_prefilter_review_score: int
+    travel_prefilter_strong_score: int
 
 
 @lru_cache
@@ -142,6 +150,20 @@ def get_settings() -> Settings:
             "GEMINI_ANALYSIS_CACHE_HOURS", 24
         ),
         gemini_max_items_per_run=_int_from_env("GEMINI_MAX_ITEMS_PER_RUN", 10),
+        travel_opportunity_v2_enabled=_bool_from_env(
+            "TRAVEL_OPPORTUNITY_V2_ENABLED", True
+        ),
+        context_sentences_before=_int_from_env("CONTEXT_SENTENCES_BEFORE", 1),
+        context_sentences_after=_int_from_env("CONTEXT_SENTENCES_AFTER", 1),
+        context_max_chars=_int_from_env("CONTEXT_MAX_CHARS", 1500),
+        travel_prefilter_enabled=_bool_from_env("TRAVEL_PREFILTER_ENABLED", True),
+        travel_prefilter_min_score=_int_from_env("TRAVEL_PREFILTER_MIN_SCORE", 45),
+        travel_prefilter_review_score=_int_from_env(
+            "TRAVEL_PREFILTER_REVIEW_SCORE", 65
+        ),
+        travel_prefilter_strong_score=_int_from_env(
+            "TRAVEL_PREFILTER_STRONG_SCORE", 80
+        ),
     )
 
 

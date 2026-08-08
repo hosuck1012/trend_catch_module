@@ -1,4 +1,5 @@
 from app.models.keyword_occurrence import KeywordOccurrence
+from app.models.keyword_context import KeywordContext
 from app.models.keyword_candidate import KeywordCandidate
 from app.models.entity_context import EntityContext
 from app.models.entity_mention import EntityMention
@@ -10,9 +11,11 @@ from app.models.weekly_trend import WeeklyTrend
 from app.models.trend_entity_link import TrendEntityLink
 from app.models.trend_context_link import TrendContextLink
 from app.models.trend_ai_analysis import TrendAIAnalysis
+from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
 
 __all__ = [
     "KeywordOccurrence",
+    "KeywordContext",
     "KeywordCandidate",
     "EntityContext",
     "EntityMention",
@@ -24,4 +27,5 @@ __all__ = [
     "TrendEntityLink",
     "TrendContextLink",
     "TrendAIAnalysis",
+    "TravelOpportunityCandidate",
 ]

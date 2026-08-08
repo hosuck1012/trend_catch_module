@@ -89,6 +89,16 @@ class DashboardAPIClient:
             ),
         )
 
+
+    def get_travel_opportunity_summary(self, *, week_start: str | None = None) -> dict:
+        return self.get(
+            "/api/travel-opportunities/summary",
+            params=_compact({"week_start": week_start}),
+        )
+
+    def get_travel_opportunities(self, **params) -> dict:
+        return self.get("/api/travel-opportunities", params=_compact(params))
+
     def _request(
         self,
         method: str,

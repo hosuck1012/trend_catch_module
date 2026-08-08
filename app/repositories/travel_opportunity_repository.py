@@ -1,0 +1,380 @@
+from datetime import date, datetime, timedelta, timezone
+import json
+
+from sqlalchemy import and_, delete, distinct, func, or_, select
+from sqlalchemy.orm import Session, joinedload
+
+from app.config import get_settings
+from app.models.entity_mention import EntityMention
+from app.models.keyword_candidate import KeywordCandidate
+from app.models.keyword_context import KeywordContext
+from app.models.keyword_occurrence import KeywordOccurrence
+from app.models.source_document import SourceDocument
+from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
+from app.models.trend_entity_link import TrendEntityLink
+from app.models.weekly_trend import WeeklyTrend
+
+
+def resolve_week_range(session: Session, week_start: date | None) -> tuple[date | None, date | None]:
+    if week_start:
+        return week_start, week_start + timedelta(days=6)
+    row = session.execute(
+        select(WeeklyTrend.week_start, WeeklyTrend.week_end)
+        .order_by(WeeklyTrend.week_start.desc())
+        .limit(1)
+    ).first()
+    if row:
+        return row.week_start, row.week_end
+    latest = session.scalar(select(func.max(SourceDocument.published_at)))
+    if latest is None:
+        return None, None
+    end = latest.date()
+    return end - timedelta(days=6), end
+
+
+def count_raw_keywords(session: Session, *, week_start: date | None) -> int:
+    if week_start:
+        trend_count = session.scalar(
+            select(func.count(WeeklyTrend.id)).where(WeeklyTrend.week_start == week_start)
+        ) or 0
+        if trend_count:
+            return trend_count
+    return session.scalar(select(func.count(distinct(KeywordOccurrence.normalized_keyword)))) or 0
+
+
+def get_quality_keywords(
+    session: Session,
+    *,
+    week_start: date | None,
+    week_end: date | None,
+    limit: int,
+) -> list[str]:
+    settings = get_settings()
+    if week_start:
+        rows = session.scalars(
+            select(WeeklyTrend.keyword)
+            .where(
+                WeeklyTrend.week_start == week_start,
+                WeeklyTrend.keyword_quality_score >= settings.keyword_min_quality_score,
+            )
+            .order_by(
+                WeeklyTrend.final_score.desc(),
+                WeeklyTrend.keyword_quality_score.desc(),
+                WeeklyTrend.source_count.desc(),
+                WeeklyTrend.keyword.asc(),
+            )
+            .limit(limit)
+        ).all()
+        if rows:
+            return list(rows)
+    filters = [KeywordCandidate.accepted.is_(True)]
+    if week_start and week_end:
+        filters.extend(
+            [
+                func.date(SourceDocument.published_at) >= week_start.isoformat(),
+                func.date(SourceDocument.published_at) <= week_end.isoformat(),
+            ]
+        )
+    rows = session.scalars(
+        select(KeywordCandidate.normalized_candidate)
+        .join(SourceDocument, SourceDocument.id == KeywordCandidate.document_id)
+        .where(*filters)
+        .distinct()
+        .order_by(KeywordCandidate.quality_score.desc(), KeywordCandidate.normalized_candidate.asc())
+        .limit(limit)
+    ).all()
+    if rows:
+        return list(rows)
+    occurrence_filters = []
+    if week_start and week_end:
+        occurrence_filters.extend(
+            [
+                func.date(KeywordOccurrence.occurred_at) >= week_start.isoformat(),
+                func.date(KeywordOccurrence.occurred_at) <= week_end.isoformat(),
+            ]
+        )
+    return list(
+        session.scalars(
+            select(KeywordOccurrence.normalized_keyword)
+            .where(*occurrence_filters)
+            .distinct()
+            .order_by(KeywordOccurrence.normalized_keyword.asc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def get_keyword_occurrence_documents(
+    session: Session,
+    *,
+    normalized_keywords: list[str],
+    week_start: date | None,
+    week_end: date | None,
+    limit: int,
+) -> list[tuple[KeywordOccurrence, SourceDocument]]:
+    if not normalized_keywords:
+        return []
+    conditions = [KeywordOccurrence.normalized_keyword.in_(normalized_keywords)]
+    if week_start and week_end:
+        conditions.extend(
+            [
+                func.date(KeywordOccurrence.occurred_at) >= week_start.isoformat(),
+                func.date(KeywordOccurrence.occurred_at) <= week_end.isoformat(),
+            ]
+        )
+    return list(
+        session.execute(
+            select(KeywordOccurrence, SourceDocument)
+            .join(SourceDocument, SourceDocument.id == KeywordOccurrence.document_id)
+            .where(*conditions)
+            .order_by(KeywordOccurrence.occurred_at.desc(), KeywordOccurrence.id.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def existing_context_keys(
+    session: Session,
+    *,
+    triples: list[tuple[int, str, str]],
+) -> set[tuple[int, str, str]]:
+    if not triples:
+        return set()
+    requested = set(triples)
+    document_ids = sorted({document_id for document_id, _keyword, _hash in requested})
+    keywords = sorted({keyword for _document_id, keyword, _hash in requested})
+    hashes = sorted({context_hash for _document_id, _keyword, context_hash in requested})
+    rows = session.execute(
+        select(
+            KeywordContext.document_id,
+            KeywordContext.normalized_keyword,
+            KeywordContext.context_hash,
+        ).where(
+            KeywordContext.document_id.in_(document_ids),
+            KeywordContext.normalized_keyword.in_(keywords),
+            KeywordContext.context_hash.in_(hashes),
+        )
+    ).all()
+    return {
+        (row.document_id, row.normalized_keyword, row.context_hash)
+        for row in rows
+        if (row.document_id, row.normalized_keyword, row.context_hash) in requested
+    }
+
+def add_keyword_contexts(session: Session, rows: list[dict[str, object]]) -> None:
+    session.add_all(KeywordContext(**row) for row in rows)
+    session.commit()
+
+
+def get_keyword_contexts_for_week(
+    session: Session,
+    *,
+    week_start: date | None,
+    week_end: date | None,
+    limit: int,
+) -> list[KeywordContext]:
+    conditions = []
+    if week_start and week_end:
+        conditions.extend(
+            [
+                func.date(KeywordContext.published_at) >= week_start.isoformat(),
+                func.date(KeywordContext.published_at) <= week_end.isoformat(),
+            ]
+        )
+    return list(
+        session.scalars(
+            select(KeywordContext)
+            .where(*conditions)
+            .order_by(KeywordContext.published_at.desc(), KeywordContext.id.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def get_trend_by_keyword(session: Session, *, keyword: str, week_start: date | None) -> WeeklyTrend | None:
+    statement = select(WeeklyTrend).where(WeeklyTrend.keyword == keyword)
+    if week_start:
+        statement = statement.where(WeeklyTrend.week_start == week_start)
+    return session.scalar(statement.order_by(WeeklyTrend.week_start.desc()).limit(1))
+
+
+def get_entities_for_context(
+    session: Session,
+    *,
+    context: KeywordContext,
+    week_start: date | None,
+) -> tuple[list[TrendEntityLink], list[EntityMention]]:
+    trend_links = []
+    if week_start:
+        trend_links = list(
+            session.scalars(
+                select(TrendEntityLink)
+                .where(
+                    TrendEntityLink.keyword == context.normalized_keyword,
+                    TrendEntityLink.week_start == week_start,
+                )
+                .order_by(TrendEntityLink.is_primary.desc(), TrendEntityLink.relation_score.desc())
+            ).all()
+        )
+    mentions = list(
+        session.scalars(
+            select(EntityMention)
+            .where(EntityMention.document_id == context.document_id)
+            .order_by(EntityMention.confidence.desc())
+        ).all()
+    )
+    return trend_links, mentions
+
+
+def upsert_travel_candidates(
+    session: Session,
+    *,
+    week_start: date,
+    rows: list[dict[str, object]],
+    force: bool,
+) -> None:
+    if force:
+        context_ids = [int(row["keyword_context_id"]) for row in rows]
+        if context_ids:
+            session.execute(
+                delete(TravelOpportunityCandidate).where(
+                    TravelOpportunityCandidate.week_start == week_start,
+                    TravelOpportunityCandidate.keyword_context_id.in_(context_ids),
+                )
+            )
+    existing = {
+        (row.normalized_keyword, row.week_start, row.keyword_context_id): row
+        for row in session.scalars(
+            select(TravelOpportunityCandidate).where(
+                TravelOpportunityCandidate.week_start == week_start
+            )
+        ).all()
+    }
+    for values in rows:
+        key = (
+            values["normalized_keyword"],
+            values["week_start"],
+            values["keyword_context_id"],
+        )
+        existing_row = existing.get(key)
+        if existing_row is None:
+            session.add(TravelOpportunityCandidate(**values))
+            continue
+        for name, value in values.items():
+            if name not in {"keyword_context_id", "week_start", "normalized_keyword"}:
+                setattr(existing_row, name, value)
+    session.commit()
+
+
+def get_candidates(
+    session: Session,
+    *,
+    week_start: date | None,
+    status: str | None,
+    min_score: float | None,
+    travel_category: str | None,
+    limit: int,
+) -> list[TravelOpportunityCandidate]:
+    conditions = []
+    if week_start:
+        conditions.append(TravelOpportunityCandidate.week_start == week_start)
+    if status:
+        conditions.append(TravelOpportunityCandidate.prefilter_status == status)
+    if min_score is not None:
+        conditions.append(TravelOpportunityCandidate.travel_pre_score >= min_score)
+    if travel_category:
+        conditions.append(TravelOpportunityCandidate.travel_category == travel_category)
+    return list(
+        session.scalars(
+            select(TravelOpportunityCandidate)
+            .options(joinedload(TravelOpportunityCandidate.keyword_context))
+            .where(*conditions)
+            .order_by(
+                TravelOpportunityCandidate.travel_pre_score.desc(),
+                TravelOpportunityCandidate.normalized_keyword.asc(),
+            )
+            .limit(limit)
+        ).all()
+    )
+
+
+def get_candidates_for_keyword(session: Session, normalized_keyword: str) -> list[TravelOpportunityCandidate]:
+    return list(
+        session.scalars(
+            select(TravelOpportunityCandidate)
+            .options(joinedload(TravelOpportunityCandidate.keyword_context))
+            .where(TravelOpportunityCandidate.normalized_keyword == normalized_keyword)
+            .order_by(
+                TravelOpportunityCandidate.week_start.desc(),
+                TravelOpportunityCandidate.travel_pre_score.desc(),
+            )
+        ).all()
+    )
+
+
+def summarize_v2(session: Session, *, week_start: date | None) -> dict[str, object]:
+    resolved_start, _resolved_end = resolve_week_range(session, week_start)
+    raw = count_raw_keywords(session, week_start=resolved_start)
+    settings = get_settings()
+    quality = 0
+    if resolved_start:
+        quality = session.scalar(
+            select(func.count(WeeklyTrend.id)).where(
+                WeeklyTrend.week_start == resolved_start,
+                WeeklyTrend.keyword_quality_score >= settings.keyword_min_quality_score,
+            )
+        ) or 0
+    if quality == 0:
+        quality = session.scalar(
+            select(func.count(distinct(KeywordCandidate.normalized_candidate))).where(
+                KeywordCandidate.accepted.is_(True)
+            )
+        ) or 0
+    context_count = 0
+    if resolved_start:
+        context_count = session.scalar(
+            select(func.count(KeywordContext.id)).where(
+                func.date(KeywordContext.published_at) >= resolved_start.isoformat(),
+                func.date(KeywordContext.published_at) <= (resolved_start + timedelta(days=6)).isoformat(),
+            )
+        ) or 0
+    status_rows = session.execute(
+        select(TravelOpportunityCandidate.prefilter_status, func.count(TravelOpportunityCandidate.id))
+        .where(TravelOpportunityCandidate.week_start == resolved_start if resolved_start else True)
+        .group_by(TravelOpportunityCandidate.prefilter_status)
+    ).all()
+    counts = {row[0]: row[1] for row in status_rows}
+    review = counts.get("review", 0)
+    strong = counts.get("strong", 0)
+    estimated_calls = strong
+    reduction = _reduction_rate(raw, estimated_calls)
+    return {
+        "week_start": resolved_start,
+        "raw_keyword_count": raw,
+        "quality_keyword_count": quality,
+        "context_candidate_count": context_count,
+        "travel_prefilter_count": review + strong,
+        "strong_candidate_count": strong,
+        "estimated_gemini_calls": estimated_calls,
+        "llm_reduction_rate": reduction,
+        "status_counts": {
+            "rejected": counts.get("rejected", 0),
+            "weak": counts.get("weak", 0),
+            "review": review,
+            "strong": strong,
+        },
+    }
+
+
+def encode_json(values: list[str]) -> str:
+    return json.dumps(values, ensure_ascii=False)
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _reduction_rate(raw: int, estimated_calls: int) -> float:
+    if raw <= 0:
+        return 0.0
+    return round((1 - estimated_calls / raw) * 100, 2)
