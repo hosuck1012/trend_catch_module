@@ -159,8 +159,13 @@ def _ensure_sqlite_travel_opportunity_columns() -> None:
     required = {
         "semantic_travel_score": "REAL",
         "semantic_status": "VARCHAR(30)",
+        "embedding_model": "VARCHAR(255)",
+        "semantic_positive_score": "REAL",
         "semantic_positive_category": "VARCHAR(50)",
+        "semantic_negative_score": "REAL",
         "semantic_negative_category": "VARCHAR(50)",
+        "embedding_input_hash": "VARCHAR(64)",
+        "semantic_calculated_at": "DATETIME",
         "trend_strength_score": "REAL",
         "context_clarity_score": "REAL",
         "travel_convertibility_score": "REAL",

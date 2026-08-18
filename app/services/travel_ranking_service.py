@@ -448,11 +448,8 @@ def score_travel_convertibility(
     weight = sum(item_weight for _, item_weight in components)
     score = sum(value * item_weight for value, item_weight in components) / weight
     negative_penalty = max((row.negative_context_penalty for row in rows), default=0.0)
-    negative_categories = {
-        (row.semantic_negative_category or "").upper() for row in rows
-    }
     score -= min(negative_penalty, 40) * 0.75
-    if negative_categories & NEGATIVE_SEMANTIC_CATEGORIES:
+    if any(_negative_semantic_dominant(row) for row in rows):
         score -= 45
     if best.travel_category not in CONCRETE_TRAVEL_CATEGORIES:
         score = min(score, 55)
@@ -531,10 +528,7 @@ def assess_evidence(
     elif "MATCHED_CONTEXT" in codes:
         score += 15
 
-    negative_categories = {
-        (row.semantic_negative_category or "").upper() for row in rows
-    }
-    negative_dominant = bool(negative_categories & NEGATIVE_SEMANTIC_CATEGORIES)
+    negative_dominant = any(_negative_semantic_dominant(row) for row in rows)
     if negative_dominant:
         codes.add("NEGATIVE_SEMANTIC_DOMINANT")
     best = max(rows, key=lambda row: row.travel_pre_score)
@@ -565,6 +559,17 @@ def assess_evidence(
         document_count=document_count,
         source_count=source_count,
     )
+
+
+def _negative_semantic_dominant(row: TravelOpportunityCandidate) -> bool:
+    category = (row.semantic_negative_category or "").upper()
+    if category not in NEGATIVE_SEMANTIC_CATEGORIES:
+        return False
+    positive_score = getattr(row, "semantic_positive_score", None)
+    negative_score = getattr(row, "semantic_negative_score", None)
+    if positive_score is None or negative_score is None:
+        return positive_score is None and negative_score is None
+    return negative_score >= positive_score
 
 
 def calculate_high_precision_score(

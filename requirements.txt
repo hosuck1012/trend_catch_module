@@ -13,3 +13,4 @@ streamlit
 pandas
 plotly
 kiwipiepy
+sentence-transformers>=6,<7

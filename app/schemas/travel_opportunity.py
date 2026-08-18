@@ -56,6 +56,34 @@ class PrefilterResponse(BaseModel):
     context_candidate_count: int
 
 
+class SemanticCandidatePreviewResponse(BaseModel):
+    keyword: str
+    normalized_keyword: str
+    travel_category: str
+    prefilter_status: str
+    semantic_travel_score: float
+    semantic_status: str
+    semantic_positive_score: float
+    semantic_positive_category: str
+    semantic_negative_score: float
+    semantic_negative_category: str
+
+
+class SemanticFilterResponse(BaseModel):
+    status: str
+    dry_run: bool
+    week_start: date | None = None
+    processed: int
+    semantic_rejected: int
+    semantic_weak: int
+    semantic_review: int
+    semantic_strong: int
+    estimated_gemini_candidates: int
+    top_candidates: list[SemanticCandidatePreviewResponse] = Field(default_factory=list)
+    model_name: str
+    cache_hits: int
+
+
 class TravelOpportunityContextResponse(BaseModel):
     id: int
     document_id: int
@@ -82,8 +110,13 @@ class TravelOpportunityItemResponse(BaseModel):
     reasoning_codes: list[str] = Field(default_factory=list)
     semantic_travel_score: float | None = None
     semantic_status: str | None = None
+    embedding_model: str | None = None
+    semantic_positive_score: float | None = None
     semantic_positive_category: str | None = None
+    semantic_negative_score: float | None = None
     semantic_negative_category: str | None = None
+    embedding_input_hash: str | None = None
+    semantic_calculated_at: datetime | None = None
     trend_strength_score: float | None = None
     context_clarity_score: float | None = None
     travel_convertibility_score: float | None = None

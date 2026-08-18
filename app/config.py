@@ -69,6 +69,15 @@ class Settings:
     travel_prefilter_min_score: int
     travel_prefilter_review_score: int
     travel_prefilter_strong_score: int
+    travel_embedding_enabled: bool
+    travel_embedding_model: str
+    travel_embedding_device: str
+    travel_embedding_batch_size: int
+    travel_embedding_max_context_chars: int
+    travel_semantic_reject_threshold: float
+    travel_semantic_review_threshold: float
+    travel_semantic_strong_threshold: float
+    travel_semantic_anchor_version: str
     travel_gemini_max_candidates_per_week: int
     travel_gemini_cache_enabled: bool
     travel_gemini_max_input_chars: int
@@ -170,6 +179,27 @@ def get_settings() -> Settings:
         travel_prefilter_strong_score=_int_from_env(
             "TRAVEL_PREFILTER_STRONG_SCORE", 80
         ),
+        travel_embedding_enabled=_bool_from_env("TRAVEL_EMBEDDING_ENABLED", True),
+        travel_embedding_model=os.getenv(
+            "TRAVEL_EMBEDDING_MODEL", "intfloat/multilingual-e5-small"
+        ).strip(),
+        travel_embedding_device=os.getenv("TRAVEL_EMBEDDING_DEVICE", "cpu").strip().lower(),
+        travel_embedding_batch_size=_int_from_env("TRAVEL_EMBEDDING_BATCH_SIZE", 16),
+        travel_embedding_max_context_chars=_int_from_env(
+            "TRAVEL_EMBEDDING_MAX_CONTEXT_CHARS", 1000
+        ),
+        travel_semantic_reject_threshold=_float_from_env(
+            "TRAVEL_SEMANTIC_REJECT_THRESHOLD", 0.35
+        ),
+        travel_semantic_review_threshold=_float_from_env(
+            "TRAVEL_SEMANTIC_REVIEW_THRESHOLD", 0.55
+        ),
+        travel_semantic_strong_threshold=_float_from_env(
+            "TRAVEL_SEMANTIC_STRONG_THRESHOLD", 0.70
+        ),
+        travel_semantic_anchor_version=os.getenv(
+            "TRAVEL_SEMANTIC_ANCHOR_VERSION", "v1"
+        ).strip(),
         travel_gemini_max_candidates_per_week=_int_from_env(
             "TRAVEL_GEMINI_MAX_CANDIDATES_PER_WEEK", 3
         ),

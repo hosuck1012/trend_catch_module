@@ -15,6 +15,9 @@ from app.models.trend_entity_link import TrendEntityLink
 from app.models.weekly_trend import WeeklyTrend
 
 
+SEMANTIC_PREFILTER_STATUSES = ("weak", "review", "strong")
+
+
 def resolve_week_range(session: Session, week_start: date | None) -> tuple[date | None, date | None]:
     if week_start:
         return week_start, week_start + timedelta(days=6)
@@ -317,6 +320,85 @@ def get_candidates_for_keyword(session: Session, normalized_keyword: str) -> lis
             )
         ).all()
     )
+
+
+def get_semantic_filter_candidates(
+    session: Session,
+    *,
+    week_start: date,
+    limit: int,
+) -> list[TravelOpportunityCandidate]:
+    return list(
+        session.scalars(
+            select(TravelOpportunityCandidate)
+            .options(joinedload(TravelOpportunityCandidate.keyword_context))
+            .where(
+                TravelOpportunityCandidate.week_start == week_start,
+                TravelOpportunityCandidate.prefilter_status.in_(SEMANTIC_PREFILTER_STATUSES),
+            )
+            .order_by(
+                TravelOpportunityCandidate.travel_pre_score.desc(),
+                TravelOpportunityCandidate.normalized_keyword.asc(),
+                TravelOpportunityCandidate.id.asc(),
+            )
+            .limit(limit)
+        ).unique().all()
+    )
+
+
+def save_semantic_results(
+    session: Session,
+    *,
+    values_by_id: dict[int, dict[str, object]],
+) -> None:
+    if not values_by_id:
+        return
+    semantic_rows = session.scalars(
+        select(TravelOpportunityCandidate).where(
+            TravelOpportunityCandidate.id.in_(values_by_id)
+        )
+    ).all()
+    affected_keys = {
+        (row.week_start, row.normalized_keyword) for row in semantic_rows
+    }
+    affected_rows = session.scalars(
+        select(TravelOpportunityCandidate).where(
+            or_(
+                *(
+                    and_(
+                        TravelOpportunityCandidate.week_start == affected_week_start,
+                        TravelOpportunityCandidate.normalized_keyword == normalized_keyword,
+                    )
+                    for affected_week_start, normalized_keyword in affected_keys
+                )
+            )
+        )
+    ).all()
+    downstream_fields = (
+        "trend_strength_score",
+        "context_clarity_score",
+        "travel_convertibility_score",
+        "evidence_confidence_score",
+        "high_precision_score",
+        "evidence_gate",
+        "evidence_codes_json",
+        "evidence_document_count",
+        "evidence_source_count",
+        "ranking_status",
+        "rank_in_week",
+        "ranking_version",
+        "calculated_at",
+        "cluster_id",
+        "cluster_representative",
+        "gemini_eligible",
+    )
+    for row in affected_rows:
+        for field_name in downstream_fields:
+            setattr(row, field_name, None)
+    for row in semantic_rows:
+        for name, value in values_by_id[row.id].items():
+            setattr(row, name, value)
+    session.commit()
 
 
 def count_keyword_candidate_funnel(

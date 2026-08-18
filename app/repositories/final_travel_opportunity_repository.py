@@ -31,6 +31,9 @@ def get_eligible_candidates(
             TravelOpportunityCandidate.gemini_eligible.is_(True),
             TravelOpportunityCandidate.cluster_representative.is_(True),
             TravelOpportunityCandidate.ranking_status.in_(ELIGIBLE_RANKING_STATUSES),
+            TravelOpportunityCandidate.semantic_status.in_(
+                ("semantic_review", "semantic_strong")
+            ),
         )
         .order_by(
             priority_order,
