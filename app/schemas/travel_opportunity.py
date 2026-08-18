@@ -131,6 +131,11 @@ class TravelOpportunityDetailResponse(BaseModel):
 class TravelOpportunitySummaryResponse(BaseModel):
     week_start: date | None = None
     raw_keyword_count: int
+    raw_keyword_occurrences: int = 0
+    keyword_candidate_total: int = 0
+    keyword_candidate_accepted_rows: int = 0
+    distinct_accepted_keywords: int = 0
+    weekly_trend_count: int = 0
     quality_keyword_count: int
     context_candidate_count: int
     travel_prefilter_count: int

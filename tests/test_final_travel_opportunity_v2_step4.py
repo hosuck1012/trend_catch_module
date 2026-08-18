@@ -17,6 +17,7 @@ from app.api.travel_opportunities import get_final_gemini_adapter
 from app.config import get_settings
 from app.main import app
 from app.models.entity_mention import EntityMention
+from app.models.keyword_candidate import KeywordCandidate
 from app.models.entity_context import EntityContext
 from app.models.final_travel_opportunity import FinalTravelOpportunity
 from app.models.keyword_context import KeywordContext
@@ -346,6 +347,7 @@ def test_final_api_cost_report_and_no_automatic_gemini_call(client, db_session) 
     assert finals_after.json()["total"] == 1
     assert detail.json()["final_decision"] == "accept"
     assert cost_after.json()["gemini_calls_this_week"] == 1
+    assert cost_after.json()["quality_keyword_count"] == 1
     assert cost_after.json()["gemini_eligible_count"] == 1
     assert cost_after.json()["overall_llm_reduction_rate"] >= 0
 
@@ -441,6 +443,24 @@ def _seed_eligible(session, *, context_count: int = 2) -> TravelOpportunityCandi
                 source=source,
                 occurred_at=document.published_at,
                 keyword_quality_score=95,
+                pipeline_version="v2",
+            )
+        )
+        session.add(
+            KeywordCandidate(
+                document_id=document.id,
+                candidate_text="부산불꽃축제",
+                normalized_candidate="부산불꽃축제",
+                candidate_type="noun_phrase",
+                extractor="test",
+                quality_score=95,
+                accepted=True,
+                rejection_reason=None,
+                title_occurrence=1,
+                body_occurrence=1,
+                entity_type="EVENT",
+                entity_confidence=0.95,
+                created_at=NOW + timedelta(days=30),
                 pipeline_version="v2",
             )
         )

@@ -6,6 +6,7 @@ from app.context_v2.context_extractor import extract_keyword_contexts
 from app.context_v2.sentence_splitter import split_sentences
 from app.context_v2.travel_rules import EntitySignal, TrendSignal, evaluate_travel_rules, load_terms
 from app.models.entity_mention import EntityMention
+from app.models.keyword_candidate import KeywordCandidate
 from app.models.keyword_context import KeywordContext
 from app.models.keyword_occurrence import KeywordOccurrence
 from app.models.source_document import SourceDocument
@@ -19,6 +20,7 @@ from app.services.travel_prefilter_service import prefilter_travel_opportunities
 WEEK_START = date(2026, 7, 27)
 WEEK_END = date(2026, 8, 2)
 NOW = datetime(2026, 8, 1, 9, 0, 0)
+CANDIDATE_CREATED_AT = datetime(2026, 8, 19, 9, 0, 0)
 
 
 def test_korean_sentence_splitter_handles_quotes_and_newlines() -> None:
@@ -253,19 +255,76 @@ def test_prefilter_dry_run_db_unchanged_and_gemini_not_called(monkeypatch, clien
     payload = response.json()
     assert payload["processed"] >= 1
     assert "reduction_rate" in payload
+    assert payload["quality_keyword_count"] == 2
     assert (db_session.scalar(select(func.count(TravelOpportunityCandidate.id))) or 0) == before
 
 
-def test_summary_calculation_for_dashboard(db_session) -> None:
+def test_summary_calculation_for_dashboard(client, db_session) -> None:
     _seed_travel(db_session)
     build_keyword_contexts(db_session, week_start=WEEK_START, limit=50, force=False, dry_run=False)
     prefilter_travel_opportunities(db_session, week_start=WEEK_START, dry_run=False, force=True, limit=50)
-    summary = summarize_v2(db_session, week_start=WEEK_START)
+    response = client.get(f"/api/travel-opportunities/summary?week_start={WEEK_START.isoformat()}")
+    assert response.status_code == 200
+    summary = response.json()
     assert summary["raw_keyword_count"] == 2
+    assert summary["raw_keyword_occurrences"] == 2
+    assert summary["keyword_candidate_total"] == 2
+    assert summary["keyword_candidate_accepted_rows"] == 2
+    assert summary["distinct_accepted_keywords"] == 2
     assert summary["quality_keyword_count"] == 2
+    assert summary["weekly_trend_count"] == 2
     assert summary["context_candidate_count"] >= 2
     assert summary["estimated_gemini_calls"] == summary["strong_candidate_count"]
     assert 0 <= summary["llm_reduction_rate"] <= 100
+
+
+def test_summary_quality_counts_are_zero_without_candidates(db_session) -> None:
+    db_session.add_all(
+        [
+            _trend("주간키워드1", 90, 2),
+            _trend("주간키워드2", 80, 2),
+        ]
+    )
+    db_session.commit()
+
+    summary = summarize_v2(db_session, week_start=WEEK_START)
+
+    assert summary["keyword_candidate_total"] == 0
+    assert summary["keyword_candidate_accepted_rows"] == 0
+    assert summary["distinct_accepted_keywords"] == 0
+    assert summary["quality_keyword_count"] == 0
+    assert summary["raw_keyword_count"] == 2
+    assert summary["raw_keyword_occurrences"] == 0
+    assert summary["weekly_trend_count"] == 2
+
+
+def test_summary_quality_counts_use_document_week_and_distinct_keywords(db_session) -> None:
+    target_one = _source_document("target-one", NOW)
+    target_two = _source_document("target-two", datetime(2026, 7, 28, 9, 0, 0))
+    before_week = _source_document("before-week", datetime(2026, 7, 20, 9, 0, 0))
+    after_week = _source_document("after-week", datetime(2026, 8, 3, 0, 0, 0))
+    db_session.add_all([target_one, target_two, before_week, after_week])
+    db_session.flush()
+    db_session.add_all(
+        [
+            _candidate(target_one.id, "중복키워드", accepted=True),
+            _candidate(target_two.id, "중복키워드", accepted=True),
+            _candidate(target_two.id, "고유키워드", accepted=True),
+            _candidate(target_two.id, "거절키워드", accepted=False),
+            _candidate(before_week.id, "이전주간키워드", accepted=True),
+            _candidate(after_week.id, "다음주간키워드", accepted=True),
+            _trend("WeeklyTrend와별도", 90, 2),
+        ]
+    )
+    db_session.commit()
+
+    summary = summarize_v2(db_session, week_start=WEEK_START)
+
+    assert summary["keyword_candidate_total"] == 4
+    assert summary["keyword_candidate_accepted_rows"] == 3
+    assert summary["distinct_accepted_keywords"] == 2
+    assert summary["quality_keyword_count"] == 2
+    assert summary["weekly_trend_count"] == 1
 
 
 def test_positive_and_negative_term_files_have_terms() -> None:
@@ -324,6 +383,12 @@ def _seed_travel(session) -> None:
     )
     session.add_all(
         [
+            _candidate(film.id, "8월의크리스마스", accepted=True),
+            _candidate(finance.id, "삼성전자", accepted=True),
+        ]
+    )
+    session.add_all(
+        [
             _trend("8월의크리스마스", 90, 2),
             _trend("삼성전자", 90, 3),
         ]
@@ -359,6 +424,40 @@ def _seed_travel(session) -> None:
         ]
     )
     session.commit()
+
+
+def _source_document(source_id: str, published_at: datetime) -> SourceDocument:
+    return SourceDocument(
+        source="mock",
+        source_id=source_id,
+        title=source_id,
+        text=f"{source_id} 본문",
+        published_at=published_at,
+        collected_at=CANDIDATE_CREATED_AT,
+        views=None,
+        likes=None,
+        comments=None,
+        url=f"https://example.test/{source_id}",
+    )
+
+
+def _candidate(document_id: int, normalized: str, *, accepted: bool) -> KeywordCandidate:
+    return KeywordCandidate(
+        document_id=document_id,
+        candidate_text=normalized,
+        normalized_candidate=normalized,
+        candidate_type="noun_phrase",
+        extractor="test",
+        quality_score=90 if accepted else 10,
+        accepted=accepted,
+        rejection_reason=None if accepted else "low_quality",
+        title_occurrence=1,
+        body_occurrence=1,
+        entity_type=None,
+        entity_confidence=None,
+        created_at=CANDIDATE_CREATED_AT,
+        pipeline_version="v2",
+    )
 
 
 def _trend(keyword: str, final_score: float, source_count: int) -> WeeklyTrend:

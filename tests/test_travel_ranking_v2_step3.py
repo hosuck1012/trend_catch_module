@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 
 from app.models.entity_context import EntityContext
 from app.models.entity_mention import EntityMention
+from app.models.keyword_candidate import KeywordCandidate
 from app.models.keyword_context import KeywordContext
 from app.models.keyword_occurrence import KeywordOccurrence
 from app.models.source_document import SourceDocument
@@ -364,6 +365,24 @@ def _seed_rankable_candidates(session) -> None:
                     source=source,
                     occurred_at=document.published_at,
                     keyword_quality_score=95,
+                    pipeline_version="v2",
+                )
+            )
+            session.add(
+                KeywordCandidate(
+                    document_id=document.id,
+                    candidate_text=keyword,
+                    normalized_candidate=keyword,
+                    candidate_type="noun_phrase",
+                    extractor="test",
+                    quality_score=95,
+                    accepted=True,
+                    rejection_reason=None,
+                    title_occurrence=1,
+                    body_occurrence=1,
+                    entity_type=None,
+                    entity_confidence=None,
+                    created_at=NOW + timedelta(days=30),
                     pipeline_version="v2",
                 )
             )

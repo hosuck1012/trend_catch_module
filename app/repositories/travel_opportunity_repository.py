@@ -319,24 +319,73 @@ def get_candidates_for_keyword(session: Session, normalized_keyword: str) -> lis
     )
 
 
+def count_keyword_candidate_funnel(
+    session: Session,
+    *,
+    week_start: date | None,
+    week_end: date | None,
+) -> tuple[int, int, int]:
+    week_filters = []
+    if week_start and week_end:
+        document_ids = select(SourceDocument.id).where(
+            SourceDocument.published_at
+            >= datetime.combine(week_start, datetime.min.time()),
+            SourceDocument.published_at
+            < datetime.combine(week_end + timedelta(days=1), datetime.min.time()),
+        )
+        week_filters.append(KeywordCandidate.document_id.in_(document_ids))
+
+    total = session.scalar(
+        select(func.count(KeywordCandidate.id)).where(*week_filters)
+    ) or 0
+    accepted_rows = session.scalar(
+        select(func.count(KeywordCandidate.id)).where(
+            KeywordCandidate.accepted.is_(True),
+            *week_filters,
+        )
+    ) or 0
+    distinct_accepted = session.scalar(
+        select(func.count(distinct(KeywordCandidate.normalized_candidate))).where(
+            KeywordCandidate.accepted.is_(True),
+            *week_filters,
+        )
+    ) or 0
+    return total, accepted_rows, distinct_accepted
+
+
 def summarize_v2(session: Session, *, week_start: date | None) -> dict[str, object]:
-    resolved_start, _resolved_end = resolve_week_range(session, week_start)
+    resolved_start, resolved_end = resolve_week_range(session, week_start)
+
     raw = count_raw_keywords(session, week_start=resolved_start)
-    settings = get_settings()
-    quality = 0
-    if resolved_start:
-        quality = session.scalar(
-            select(func.count(WeeklyTrend.id)).where(
-                WeeklyTrend.week_start == resolved_start,
-                WeeklyTrend.keyword_quality_score >= settings.keyword_min_quality_score,
+    raw_occurrences = (
+        session.scalar(
+            select(func.count(KeywordOccurrence.id)).where(
+                KeywordOccurrence.occurred_at
+                >= datetime.combine(resolved_start, datetime.min.time()),
+                KeywordOccurrence.occurred_at
+                < datetime.combine(resolved_end + timedelta(days=1), datetime.min.time()),
             )
-        ) or 0
-    if quality == 0:
-        quality = session.scalar(
-            select(func.count(distinct(KeywordCandidate.normalized_candidate))).where(
-                KeywordCandidate.accepted.is_(True)
-            )
-        ) or 0
+        )
+        if resolved_start and resolved_end
+        else session.scalar(select(func.count(KeywordOccurrence.id))) or 0
+    )
+
+    candidate_total, candidate_accepted_rows, distinct_accepted_keywords = (
+        count_keyword_candidate_funnel(
+            session,
+            week_start=resolved_start,
+            week_end=resolved_end,
+        )
+    )
+
+    weekly_trend_count = session.scalar(
+        select(func.count(WeeklyTrend.id)).where(
+            WeeklyTrend.week_start == resolved_start
+        )
+    ) if resolved_start else session.scalar(
+        select(func.count(WeeklyTrend.id))
+    ) or 0
+
     context_count = 0
     if resolved_start:
         context_count = session.scalar(
@@ -358,7 +407,12 @@ def summarize_v2(session: Session, *, week_start: date | None) -> dict[str, obje
     return {
         "week_start": resolved_start,
         "raw_keyword_count": raw,
-        "quality_keyword_count": quality,
+        "raw_keyword_occurrences": raw_occurrences,
+        "keyword_candidate_total": candidate_total,
+        "keyword_candidate_accepted_rows": candidate_accepted_rows,
+        "distinct_accepted_keywords": distinct_accepted_keywords,
+        "weekly_trend_count": weekly_trend_count,
+        "quality_keyword_count": distinct_accepted_keywords,
         "context_candidate_count": context_count,
         "travel_prefilter_count": review + strong,
         "strong_candidate_count": strong,

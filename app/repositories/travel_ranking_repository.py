@@ -3,10 +3,8 @@ from datetime import date, timedelta
 from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.config import get_settings
 from app.models.entity_context import EntityContext
 from app.models.entity_mention import EntityMention
-from app.models.keyword_candidate import KeywordCandidate
 from app.models.keyword_context import KeywordContext
 from app.models.keyword_occurrence import KeywordOccurrence
 from app.models.source_document import SourceDocument
@@ -14,6 +12,7 @@ from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
 from app.models.trend_context_link import TrendContextLink
 from app.models.trend_entity_link import TrendEntityLink
 from app.models.weekly_trend import WeeklyTrend
+from app.repositories.travel_opportunity_repository import count_keyword_candidate_funnel
 
 
 SEMANTIC_RANKING_STATUSES = ("semantic_review", "semantic_strong")
@@ -218,32 +217,20 @@ def funnel_counts(session: Session, *, week_start: date | None) -> dict[str, int
             "high_precision": 0,
             "gemini_eligible": 0,
         }
-    settings = get_settings()
     raw = session.scalar(
         select(func.count(WeeklyTrend.id)).where(WeeklyTrend.week_start == week_start)
     ) or 0
-    quality = session.scalar(
-        select(func.count(WeeklyTrend.id)).where(
-            WeeklyTrend.week_start == week_start,
-            WeeklyTrend.keyword_quality_score >= settings.keyword_min_quality_score,
-        )
-    ) or 0
+    _candidate_total, _accepted_rows, quality = count_keyword_candidate_funnel(
+        session,
+        week_start=week_start,
+        week_end=week_start + timedelta(days=6),
+    )
     if raw == 0:
         week_end = week_start + timedelta(days=6)
         raw = session.scalar(
             select(func.count(distinct(KeywordOccurrence.normalized_keyword))).where(
                 func.date(KeywordOccurrence.occurred_at) >= week_start.isoformat(),
                 func.date(KeywordOccurrence.occurred_at) <= week_end.isoformat(),
-            )
-        ) or 0
-    if quality == 0:
-        quality = session.scalar(
-            select(func.count(distinct(KeywordCandidate.normalized_candidate)))
-            .join(SourceDocument, SourceDocument.id == KeywordCandidate.document_id)
-            .where(
-                KeywordCandidate.accepted.is_(True),
-                func.date(SourceDocument.published_at) >= week_start.isoformat(),
-                func.date(SourceDocument.published_at) <= (week_start + timedelta(days=6)).isoformat(),
             )
         ) or 0
     rule = session.scalar(

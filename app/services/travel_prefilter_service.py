@@ -163,13 +163,10 @@ def prefilter_travel_opportunities(
     if not dry_run and rows and resolved_start and resolved_end:
         repo.upsert_travel_candidates(session, week_start=resolved_start, rows=rows, force=force)
     raw = repo.count_raw_keywords(session, week_start=resolved_start)
-    quality = len(
-        repo.get_quality_keywords(
-            session,
-            week_start=resolved_start,
-            week_end=resolved_end,
-            limit=100000,
-        )
+    _candidate_total, _accepted_rows, quality = repo.count_keyword_candidate_funnel(
+        session,
+        week_start=resolved_start,
+        week_end=resolved_end,
     )
     estimated = status_counts["strong"]
     reduction = round((1 - estimated / raw) * 100, 2) if raw else 0.0
