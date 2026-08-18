@@ -274,6 +274,8 @@ def get_candidates(
     min_score: float | None,
     travel_category: str | None,
     limit: int,
+    semantic_status: str | None = None,
+    ranking_status: str | None = None,
 ) -> list[TravelOpportunityCandidate]:
     conditions = []
     if week_start:
@@ -284,12 +286,17 @@ def get_candidates(
         conditions.append(TravelOpportunityCandidate.travel_pre_score >= min_score)
     if travel_category:
         conditions.append(TravelOpportunityCandidate.travel_category == travel_category)
+    if semantic_status:
+        conditions.append(TravelOpportunityCandidate.semantic_status == semantic_status)
+    if ranking_status:
+        conditions.append(TravelOpportunityCandidate.ranking_status == ranking_status)
     return list(
         session.scalars(
             select(TravelOpportunityCandidate)
             .options(joinedload(TravelOpportunityCandidate.keyword_context))
             .where(*conditions)
             .order_by(
+                TravelOpportunityCandidate.high_precision_score.desc(),
                 TravelOpportunityCandidate.travel_pre_score.desc(),
                 TravelOpportunityCandidate.normalized_keyword.asc(),
             )

@@ -80,6 +80,26 @@ class TravelOpportunityItemResponse(BaseModel):
     matched_positive_terms: list[str] = Field(default_factory=list)
     matched_negative_terms: list[str] = Field(default_factory=list)
     reasoning_codes: list[str] = Field(default_factory=list)
+    semantic_travel_score: float | None = None
+    semantic_status: str | None = None
+    semantic_positive_category: str | None = None
+    semantic_negative_category: str | None = None
+    trend_strength_score: float | None = None
+    context_clarity_score: float | None = None
+    travel_convertibility_score: float | None = None
+    evidence_confidence_score: float | None = None
+    high_precision_score: float | None = None
+    evidence_gate: str | None = None
+    evidence_codes: list[str] = Field(default_factory=list)
+    evidence_document_count: int | None = None
+    evidence_source_count: int | None = None
+    ranking_status: str | None = None
+    rank_in_week: int | None = None
+    ranking_version: str | None = None
+    calculated_at: datetime | None = None
+    cluster_id: str | None = None
+    cluster_representative: bool = False
+    gemini_eligible: bool = False
     contexts: list[TravelOpportunityContextResponse] = Field(default_factory=list)
 
 
@@ -118,3 +138,78 @@ class TravelOpportunitySummaryResponse(BaseModel):
     estimated_gemini_calls: int
     llm_reduction_rate: float
     status_counts: dict[str, int]
+
+
+class RankingCandidateResponse(BaseModel):
+    keyword: str
+    normalized_keyword: str
+    week_start: date
+    travel_category: str
+    semantic_category: str | None = None
+    semantic_status: str
+    semantic_travel_score: float | None = None
+    travel_pre_score: float
+    trend_strength_score: float
+    context_clarity_score: float
+    travel_convertibility_score: float
+    evidence_confidence_score: float
+    high_precision_score: float
+    evidence_gate: str
+    evidence_codes: list[str] = Field(default_factory=list)
+    evidence_document_count: int
+    evidence_source_count: int
+    ranking_status: str
+    rank_in_week: int
+    cluster_id: str
+    cluster_representative: bool
+    gemini_eligible: bool
+    contexts: list[str] = Field(default_factory=list)
+
+
+class FunnelResponse(BaseModel):
+    raw_keyword: int
+    keyword_quality_passed: int
+    rule_candidate: int
+    semantic_candidate: int
+    high_precision_candidate: int
+    gemini_eligible: int
+    llm_reduction_rate: float
+
+
+class RankingResponse(BaseModel):
+    status: str
+    dry_run: bool
+    week_start: date | None = None
+    processed: int
+    rejected: int
+    review: int
+    gemini_candidates: int
+    priority_candidates: int
+    evidence_pass: int
+    needs_evidence: int
+    evidence_reject: int
+    estimated_gemini_calls: int
+    top_candidates: list[RankingCandidateResponse] = Field(default_factory=list)
+    funnel: FunnelResponse
+    annualized_candidate_estimate: float
+    insufficient_history: bool
+
+
+class CalibrationReportResponse(BaseModel):
+    ranking_version: str
+    week_start: date | None = None
+    thresholds: dict[str, float]
+    total_semantic_candidates: int
+    rejected: int
+    review: int
+    gemini_candidate: int
+    priority_candidate: int
+    evidence_gate_counts: dict[str, int]
+    score_distribution: dict[str, int]
+    top_20_candidates: list[RankingCandidateResponse] = Field(default_factory=list)
+    annualized_candidate_estimate: float
+    insufficient_history: bool
+    weekly_gemini_budget: int
+    estimated_llm_calls: int
+    overall_reduction_rate: float
+    funnel: FunnelResponse

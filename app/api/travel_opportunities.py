@@ -8,7 +8,9 @@ from app.database import get_db
 from app.repositories import travel_opportunity_repository as repo
 from app.schemas.travel_opportunity import (
     BuildContextsResponse,
+    CalibrationReportResponse,
     PrefilterResponse,
+    RankingResponse,
     TravelOpportunityDetailResponse,
     TravelOpportunityListResponse,
     TravelOpportunitySummaryResponse,
@@ -19,6 +21,11 @@ from app.services.travel_prefilter_service import (
     prefilter_travel_opportunities,
     serialize_candidate,
     serialize_prefilter_result,
+)
+from app.services.travel_ranking_service import (
+    calibration_report,
+    rank_travel_opportunities,
+    serialize_ranking_result,
 )
 
 
@@ -71,12 +78,41 @@ def summary(
     return repo.summarize_v2(session, week_start=week_start)
 
 
+@router.post("/rank", response_model=RankingResponse)
+def rank(
+    week_start: date | None = Query(default=None),
+    dry_run: bool = Query(default=True),
+    force: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=5000),
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    return serialize_ranking_result(
+        rank_travel_opportunities(
+            session,
+            week_start=week_start,
+            dry_run=dry_run,
+            force=force,
+            limit=limit,
+        )
+    )
+
+
+@router.get("/calibration-report", response_model=CalibrationReportResponse)
+def get_calibration_report(
+    week_start: date | None = Query(default=None),
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    return calibration_report(session, week_start=week_start)
+
+
 @router.get("", response_model=TravelOpportunityListResponse)
 def list_opportunities(
     week_start: date | None = Query(default=None),
     status: str | None = Query(default=None),
     min_score: float | None = Query(default=None, ge=0, le=100),
     travel_category: str | None = Query(default=None),
+    semantic_status: str | None = Query(default=None),
+    ranking_status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     session: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -86,6 +122,8 @@ def list_opportunities(
         status=status,
         min_score=min_score,
         travel_category=travel_category,
+        semantic_status=semantic_status,
+        ranking_status=ranking_status,
         limit=limit,
     )
     return {"total": len(rows), "items": [serialize_candidate(row) for row in rows]}

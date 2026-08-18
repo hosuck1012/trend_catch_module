@@ -99,6 +99,15 @@ class DashboardAPIClient:
     def get_travel_opportunities(self, **params) -> dict:
         return self.get("/api/travel-opportunities", params=_compact(params))
 
+    def rank_travel_opportunities(self, **params) -> dict:
+        return self.post("/api/travel-opportunities/rank", params=_compact(params))
+
+    def get_travel_calibration_report(self, *, week_start: str | None = None) -> dict:
+        return self.get(
+            "/api/travel-opportunities/calibration-report",
+            params=_compact({"week_start": week_start}),
+        )
+
     def _request(
         self,
         method: str,

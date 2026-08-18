@@ -33,6 +33,7 @@ def init_db() -> None:
     _ensure_sqlite_weekly_trend_columns()
     _ensure_sqlite_nullable_search_interest()
     _ensure_sqlite_keyword_occurrence_columns()
+    _ensure_sqlite_travel_opportunity_columns()
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -145,3 +146,41 @@ def _ensure_sqlite_nullable_search_interest() -> None:
         WeeklyTrend.__table__.create(connection)
         if payloads:
             connection.execute(WeeklyTrend.__table__.insert(), payloads)
+
+
+def _ensure_sqlite_travel_opportunity_columns() -> None:
+    if not settings.database_url.startswith("sqlite"):
+        return
+    inspector = inspect(engine)
+    table_name = "travel_opportunity_candidates"
+    if table_name not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns(table_name)}
+    required = {
+        "semantic_travel_score": "REAL",
+        "semantic_status": "VARCHAR(30)",
+        "semantic_positive_category": "VARCHAR(50)",
+        "semantic_negative_category": "VARCHAR(50)",
+        "trend_strength_score": "REAL",
+        "context_clarity_score": "REAL",
+        "travel_convertibility_score": "REAL",
+        "evidence_confidence_score": "REAL",
+        "high_precision_score": "REAL",
+        "evidence_gate": "VARCHAR(30)",
+        "evidence_codes_json": "TEXT",
+        "evidence_document_count": "INTEGER",
+        "evidence_source_count": "INTEGER",
+        "ranking_status": "VARCHAR(30)",
+        "rank_in_week": "INTEGER",
+        "ranking_version": "VARCHAR(50)",
+        "calculated_at": "DATETIME",
+        "cluster_id": "VARCHAR(64)",
+        "cluster_representative": "BOOLEAN",
+        "gemini_eligible": "BOOLEAN",
+    }
+    with engine.begin() as connection:
+        for name, definition in required.items():
+            if name not in existing:
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {name} {definition}")
+                )

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -39,6 +39,26 @@ class TravelOpportunityCandidate(Base):
     matched_positive_terms_json: Mapped[str] = mapped_column(Text, default="[]")
     matched_negative_terms_json: Mapped[str] = mapped_column(Text, default="[]")
     reasoning_codes_json: Mapped[str] = mapped_column(Text, default="[]")
+    semantic_travel_score: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    semantic_status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    semantic_positive_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    semantic_negative_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    trend_strength_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    context_clarity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    travel_convertibility_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    high_precision_score: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
+    evidence_gate: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    evidence_codes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_document_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_source_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ranking_status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    rank_in_week: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ranking_version: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    calculated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cluster_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    cluster_representative: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    gemini_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
 

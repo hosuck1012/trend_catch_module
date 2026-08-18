@@ -69,6 +69,7 @@ class Settings:
     travel_prefilter_min_score: int
     travel_prefilter_review_score: int
     travel_prefilter_strong_score: int
+    travel_gemini_max_candidates_per_week: int
 
 
 @lru_cache
@@ -163,6 +164,9 @@ def get_settings() -> Settings:
         ),
         travel_prefilter_strong_score=_int_from_env(
             "TRAVEL_PREFILTER_STRONG_SCORE", 80
+        ),
+        travel_gemini_max_candidates_per_week=_int_from_env(
+            "TRAVEL_GEMINI_MAX_CANDIDATES_PER_WEEK", 3
         ),
     )
 
