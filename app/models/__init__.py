@@ -3,6 +3,7 @@ from app.models.keyword_context import KeywordContext
 from app.models.keyword_candidate import KeywordCandidate
 from app.models.entity_context import EntityContext
 from app.models.entity_mention import EntityMention
+from app.models.final_travel_opportunity import FinalTravelOpportunity
 from app.models.scheduler_run import SchedulerRun
 from app.models.search_interest_observation import SearchInterestObservation
 from app.models.search_validation_result import SearchValidationResult
@@ -19,6 +20,7 @@ __all__ = [
     "KeywordCandidate",
     "EntityContext",
     "EntityMention",
+    "FinalTravelOpportunity",
     "SchedulerRun",
     "SearchInterestObservation",
     "SearchValidationResult",

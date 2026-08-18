@@ -70,6 +70,11 @@ class Settings:
     travel_prefilter_review_score: int
     travel_prefilter_strong_score: int
     travel_gemini_max_candidates_per_week: int
+    travel_gemini_cache_enabled: bool
+    travel_gemini_max_input_chars: int
+    travel_gemini_max_contexts: int
+    travel_gemini_max_evidence_docs: int
+    travel_gemini_prompt_version: str
 
 
 @lru_cache
@@ -168,6 +173,21 @@ def get_settings() -> Settings:
         travel_gemini_max_candidates_per_week=_int_from_env(
             "TRAVEL_GEMINI_MAX_CANDIDATES_PER_WEEK", 3
         ),
+        travel_gemini_cache_enabled=_bool_from_env(
+            "TRAVEL_GEMINI_CACHE_ENABLED", True
+        ),
+        travel_gemini_max_input_chars=_int_from_env(
+            "TRAVEL_GEMINI_MAX_INPUT_CHARS", 8000
+        ),
+        travel_gemini_max_contexts=_int_from_env(
+            "TRAVEL_GEMINI_MAX_CONTEXTS", 5
+        ),
+        travel_gemini_max_evidence_docs=_int_from_env(
+            "TRAVEL_GEMINI_MAX_EVIDENCE_DOCS", 6
+        ),
+        travel_gemini_prompt_version=os.getenv(
+            "TRAVEL_GEMINI_PROMPT_VERSION", "v2-travel-opportunity-1"
+        ).strip(),
     )
 
 

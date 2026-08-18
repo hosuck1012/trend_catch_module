@@ -4,7 +4,7 @@ from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 import json
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.ai.gemini_prompt import SYSTEM_INSTRUCTION
 from app.ai.gemini_schemas import TrendExplanation
@@ -123,6 +123,62 @@ class GeminiAdapter:
             retries=2,
         )
 
+    async def generate_structured(
+        self,
+        *,
+        user_prompt: str,
+        response_model: type[BaseModel],
+        system_instruction: str,
+    ) -> BaseModel:
+        self.ensure_configured()
+        client = self._get_client()
+        for attempt in range(MAX_ATTEMPTS):
+            if self.request_count >= self.max_requests:
+                raise GeminiAdapterError(
+                    "Gemini 요청 횟수 제한을 초과했습니다.",
+                    code="request_limit",
+                    retries=attempt,
+                )
+            self.request_count += 1
+            try:
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=self.model_name,
+                        contents=user_prompt,
+                        config={
+                            "system_instruction": system_instruction,
+                            "temperature": self.temperature,
+                            "max_output_tokens": self.max_output_tokens,
+                            "response_mime_type": "application/json",
+                            "response_json_schema": response_model.model_json_schema(),
+                        },
+                    ),
+                    timeout=self.timeout_seconds,
+                )
+                return _validated_structured_response(response, response_model)
+            except GeminiSchemaError:
+                raise
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                if attempt == MAX_ATTEMPTS - 1:
+                    raise GeminiAdapterError(
+                        "Gemini API 요청 시간이 초과되었습니다.",
+                        code="timeout",
+                        retries=attempt,
+                    ) from exc
+                await asyncio.sleep(_retry_delay(attempt=attempt, exc=exc))
+            except Exception as exc:
+                error = _convert_sdk_error(exc, retries=attempt)
+                if error.status_code not in RETRYABLE_STATUS_CODES:
+                    raise error from exc
+                if attempt == MAX_ATTEMPTS - 1:
+                    raise error from exc
+                await asyncio.sleep(_retry_delay(attempt=attempt, exc=exc))
+        raise GeminiAdapterError(
+            "Gemini API 요청에 실패했습니다.",
+            code="request_failed",
+            retries=2,
+        )
+
     async def close(self) -> None:
         if self._client is None:
             return
@@ -185,6 +241,44 @@ def _validated_response(response) -> TrendExplanation:
             "Gemini 안전 정책으로 응답이 거부되었습니다.",
             code="safety_blocked",
         )
+    raise GeminiSchemaError(
+        "선택한 Gemini 모델이 요청한 구조화 출력을 반환하지 않았습니다.",
+        code="structured_output_unsupported",
+    )
+
+
+def _validated_structured_response(
+    response: object,
+    response_model: type[BaseModel],
+) -> BaseModel:
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, response_model):
+        return parsed
+    if parsed is not None:
+        if hasattr(parsed, "model_dump"):
+            parsed = parsed.model_dump(mode="json")
+        try:
+            return response_model.model_validate(parsed)
+        except ValidationError as exc:
+            raise GeminiSchemaError(
+                "Gemini 구조화 응답이 스키마와 일치하지 않습니다.",
+                code="schema_invalid",
+            ) from exc
+    text = getattr(response, "text", None)
+    if text:
+        value = str(text).strip()
+        if value.startswith("```"):
+            lines = value.splitlines()[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            value = "\n".join(lines).strip()
+        try:
+            return response_model.model_validate(json.loads(value))
+        except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+            raise GeminiSchemaError(
+                "Gemini JSON 응답이 스키마와 일치하지 않습니다.",
+                code="schema_invalid",
+            ) from exc
     raise GeminiSchemaError(
         "선택한 Gemini 모델이 요청한 구조화 출력을 반환하지 않았습니다.",
         code="structured_output_unsupported",

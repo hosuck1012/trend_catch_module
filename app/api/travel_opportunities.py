@@ -1,10 +1,14 @@
+from collections.abc import AsyncGenerator
 from dataclasses import asdict
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.ai.gemini_adapter import GeminiAdapter
+from app.repositories import final_travel_opportunity_repository as final_repo
 from app.repositories import travel_opportunity_repository as repo
 from app.schemas.travel_opportunity import (
     BuildContextsResponse,
@@ -15,6 +19,19 @@ from app.schemas.travel_opportunity import (
     TravelOpportunityListResponse,
     TravelOpportunitySummaryResponse,
 )
+from app.schemas.final_travel_opportunity import (
+    FinalizeResponse,
+    FinalTravelOpportunityListResponse,
+    FinalTravelOpportunityResponse,
+    TravelOpportunityCostReportResponse,
+)
+from app.services.final_travel_opportunity_service import (
+    cost_report,
+    finalize_travel_opportunities,
+    serialize_final,
+    serialize_finalize_result,
+)
+from app.services.keyword_normalization_service import normalize_keyword
 from app.services.keyword_context_service import build_keyword_contexts, serialize_build_result
 from app.services.travel_prefilter_service import (
     detail_for_keyword,
@@ -30,6 +47,14 @@ from app.services.travel_ranking_service import (
 
 
 router = APIRouter(prefix="/api/travel-opportunities", tags=["travel-opportunities-v2"])
+
+
+async def get_final_gemini_adapter() -> AsyncGenerator[GeminiAdapter, None]:
+    adapter = GeminiAdapter()
+    try:
+        yield adapter
+    finally:
+        await adapter.close()
 
 
 @router.post("/build-contexts", response_model=BuildContextsResponse)
@@ -103,6 +128,72 @@ def get_calibration_report(
     session: Session = Depends(get_db),
 ) -> dict[str, object]:
     return calibration_report(session, week_start=week_start)
+
+
+@router.post("/finalize", response_model=FinalizeResponse)
+async def finalize(
+    week_start: date | None = Query(default=None),
+    keyword: str | None = Query(default=None, min_length=2, max_length=255),
+    limit: int = Query(default=3, ge=1, le=20),
+    force: bool = Query(default=False),
+    dry_run: bool = Query(default=False),
+    session: Session = Depends(get_db),
+    adapter: GeminiAdapter = Depends(get_final_gemini_adapter),
+) -> dict[str, object]:
+    result = await finalize_travel_opportunities(
+        session,
+        week_start=week_start,
+        keyword=keyword,
+        limit=limit,
+        force=force,
+        dry_run=dry_run,
+        adapter=adapter,
+    )
+    return serialize_finalize_result(result)
+
+
+@router.get("/cost-report", response_model=TravelOpportunityCostReportResponse)
+def get_cost_report(
+    week_start: date | None = Query(default=None),
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    return cost_report(session, week_start=week_start)
+
+
+@router.get("/final", response_model=FinalTravelOpportunityListResponse)
+def list_final(
+    week_start: date | None = Query(default=None),
+    decision: Literal["accept", "review", "reject"] | None = Query(default=None),
+    min_score: float | None = Query(default=None, ge=0, le=100),
+    limit: int = Query(default=100, ge=1, le=1000),
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    rows = final_repo.list_final_opportunities(
+        session,
+        week_start=week_start,
+        decision=decision,
+        min_score=min_score,
+        limit=limit,
+    )
+    return {"total": len(rows), "items": [serialize_final(row) for row in rows]}
+
+
+@router.get(
+    "/final/{normalized_keyword}",
+    response_model=FinalTravelOpportunityResponse,
+)
+def final_detail(
+    normalized_keyword: str,
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    normalized = normalize_keyword(normalized_keyword)
+    row = final_repo.get_latest_final(
+        session,
+        normalized_keyword=normalized or normalized_keyword,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Final travel opportunity not found")
+    return serialize_final(row)
 
 
 @router.get("", response_model=TravelOpportunityListResponse)
