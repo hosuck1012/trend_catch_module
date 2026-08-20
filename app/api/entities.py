@@ -30,12 +30,20 @@ async def extract(
     force: bool = Query(default=False),
     source: str | None = Query(default=None),
     since_days: int = Query(default=14, ge=1, le=3650),
+    dry_run: bool = Query(default=False),
+    after_id: int | None = Query(default=None, ge=0),
+    batch_size: int = Query(default=25, ge=1, le=100),
+    process_all: bool = Query(default=False),
 ) -> dict[str, object]:
     result = await extract_entities(
         limit=limit,
         force=force,
         source=source,
         since_days=since_days,
+        dry_run=dry_run,
+        after_id=after_id,
+        batch_size=batch_size,
+        process_all=process_all,
     )
     return result.__dict__
 

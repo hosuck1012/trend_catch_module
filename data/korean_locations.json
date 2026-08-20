@@ -25,5 +25,9 @@
   "경주시": {"type": "LOCATION", "aliases": ["경주", "경주시"]},
   "전주시": {"type": "LOCATION", "aliases": ["전주", "전주시"]},
   "여수시": {"type": "LOCATION", "aliases": ["여수", "여수시"]},
-  "속초시": {"type": "LOCATION", "aliases": ["속초", "속초시"]}
+  "속초시": {"type": "LOCATION", "aliases": ["속초", "속초시"]},
+  "고성": {"type": "LOCATION", "aliases": ["고성", "고성군"]},
+  "송도": {"type": "LOCATION", "aliases": ["송도"]},
+  "여의도": {"type": "LOCATION", "aliases": ["여의도"]},
+  "설봉공원": {"type": "PLACE", "aliases": ["설봉공원"]}
 }

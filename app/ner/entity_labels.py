@@ -13,17 +13,25 @@ class EntityType(StrEnum):
     MEME = "MEME"
 
 
+NER_PIPELINE_VERSION = "v2"
+NER_LABEL_VERSION = "travel-v2"
+
+
 ENTITY_LABEL_DESCRIPTIONS: dict[EntityType, str] = {
     EntityType.LOCATION: "city, province, country, district or geographic region",
     EntityType.PLACE: (
         "tourist attraction, landmark, station, airport, beach, park or venue"
     ),
     EntityType.PERSON: "celebrity, actor, singer or public figure",
-    EntityType.CONTENT_TITLE: "movie, drama, television show, song, webtoon or book title",
-    EntityType.EVENT: "festival, concert, exhibition, marathon or public event",
-    EntityType.FOOD: "dish, dessert, beverage or local specialty",
+    EntityType.CONTENT_TITLE: (
+        "movie, drama, television show, song, book, exhibition or program title"
+    ),
+    EntityType.EVENT: (
+        "named festival, fair, expo, exhibition, concert, sports event or marathon"
+    ),
+    EntityType.FOOD: "specific food, dish, dessert, beverage or food trend",
     EntityType.BRAND: "company, organization, product or brand",
-    EntityType.MEME: "internet meme, viral phrase, challenge or online trend",
+    EntityType.MEME: "online meme, viral phrase, social media challenge or trend phrase",
 }
 
 GLINER_LABEL_TO_ENTITY_TYPE = {

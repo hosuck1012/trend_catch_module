@@ -23,6 +23,7 @@ class GlinerStatus:
     device: str
     threshold: float
     last_error: str | None
+    model_load_count: int
 
 
 class GlinerAdapter:
@@ -34,6 +35,7 @@ class GlinerAdapter:
         self._last_error: str | None = None
         self._loaded_model_name: str | None = None
         self._actual_device: str | None = None
+        self._model_load_count = 0
 
     def get_status(self) -> GlinerStatus:
         settings = get_settings()
@@ -48,6 +50,7 @@ class GlinerAdapter:
             device=self._actual_device or settings.ner_device,
             threshold=settings.ner_threshold,
             last_error=self._last_error,
+            model_load_count=self._model_load_count,
         )
 
     async def predict(self, texts: list[str]) -> list[list[EntityCandidate]]:
@@ -82,6 +85,7 @@ class GlinerAdapter:
             self._last_error = None
             self._loaded_model_name = None
             self._actual_device = None
+            self._model_load_count = 0
 
     def _ensure_model(self, model_name: str, requested_device: str) -> Any:
         with self._load_lock:
@@ -100,6 +104,7 @@ class GlinerAdapter:
             self._model = model
             self._loaded_model_name = model_name
             self._actual_device = actual_device
+            self._model_load_count += 1
             self._status = "ready"
             self._last_error = None
             return model

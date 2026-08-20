@@ -1,0 +1,15 @@
+{
+  "version": "travel-v2",
+  "entities": [
+    {"text": "폭싹 속았수다", "type": "CONTENT_TITLE"},
+    {"text": "폭싹 속았수다 촬영지", "type": "CONTENT_TITLE"},
+    {"text": "두바이 초콜릿", "type": "FOOD"},
+    {"text": "두바이 초콜릿 챌린지", "type": "MEME"},
+    {"text": "부산불꽃축제", "type": "EVENT"},
+    {"text": "제주 금오름", "type": "PLACE"},
+    {"text": "거제야호", "type": "MEME"},
+    {"text": "한강 밤핑", "type": "MEME"},
+    {"text": "RESTOPIA", "type": "MEME"},
+    {"text": "뱅크시 스틸 히어", "type": "CONTENT_TITLE"}
+  ]
+}

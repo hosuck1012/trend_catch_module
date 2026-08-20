@@ -13,6 +13,19 @@ class EntityExtractionResponse(BaseModel):
     extractor_counts: dict[str, int]
     errors: list[str] = Field(default_factory=list)
     model_error: str | None = None
+    dry_run: bool = False
+    mentions_detected: int = 0
+    documents_with_entities: int = 0
+    created_entities: int = 0
+    updated_documents: int = 0
+    duplicates_merged: int = 0
+    batches: int = 0
+    next_cursor: int | None = None
+    has_more: bool = False
+    pipeline_version: str = "v2"
+    label_version: str = "travel-v2"
+    model_load_count: int = 0
+    processing_seconds: float = 0.0
 
 
 class EntityModelStatusResponse(BaseModel):
@@ -22,6 +35,7 @@ class EntityModelStatusResponse(BaseModel):
     device: str
     threshold: float
     last_error: str | None
+    model_load_count: int = 0
 
 
 class EntitySummaryItemResponse(BaseModel):

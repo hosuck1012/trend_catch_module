@@ -2,6 +2,7 @@ from app.models.keyword_occurrence import KeywordOccurrence
 from app.models.keyword_context import KeywordContext
 from app.models.keyword_candidate import KeywordCandidate
 from app.models.entity_context import EntityContext
+from app.models.entity_extraction_state import EntityExtractionState
 from app.models.entity_mention import EntityMention
 from app.models.final_travel_opportunity import FinalTravelOpportunity
 from app.models.scheduler_run import SchedulerRun
@@ -19,6 +20,7 @@ __all__ = [
     "KeywordContext",
     "KeywordCandidate",
     "EntityContext",
+    "EntityExtractionState",
     "EntityMention",
     "FinalTravelOpportunity",
     "SchedulerRun",

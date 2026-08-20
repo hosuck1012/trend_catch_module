@@ -4,6 +4,7 @@ from datetime import date, datetime
 from sqlalchemy import delete, distinct, func, select
 from sqlalchemy.orm import Session
 
+from app.models.entity_extraction_state import EntityExtractionState
 from app.models.entity_mention import EntityMention
 from app.models.keyword_occurrence import KeywordOccurrence
 from app.models.source_document import SourceDocument
@@ -20,6 +21,52 @@ class DocumentSnapshot:
     source: str
     occurred_at: datetime
     has_entities: bool
+
+
+def get_document_snapshots_page(
+    session: Session,
+    *,
+    since: datetime,
+    source: str | None,
+    after_id: int,
+    limit: int,
+) -> list[DocumentSnapshot]:
+    mention_exists = (
+        select(EntityMention.id)
+        .where(EntityMention.document_id == SourceDocument.id)
+        .exists()
+    )
+    statement = (
+        select(SourceDocument, mention_exists.label("has_entities"))
+        .where(
+            SourceDocument.published_at >= since,
+            SourceDocument.id > after_id,
+        )
+        .order_by(SourceDocument.id.asc())
+        .limit(limit)
+    )
+    if source:
+        statement = statement.where(SourceDocument.source == source)
+    return [_snapshot(document, has_entities) for document, has_entities in session.execute(statement)]
+
+
+def get_document_snapshots_by_ids(
+    session: Session,
+    document_ids: list[int],
+) -> list[DocumentSnapshot]:
+    if not document_ids:
+        return []
+    mention_exists = (
+        select(EntityMention.id)
+        .where(EntityMention.document_id == SourceDocument.id)
+        .exists()
+    )
+    rows = session.execute(
+        select(SourceDocument, mention_exists.label("has_entities"))
+        .where(SourceDocument.id.in_(document_ids))
+        .order_by(SourceDocument.id.asc())
+    )
+    return [_snapshot(document, has_entities) for document, has_entities in rows]
 
 
 @dataclass(frozen=True)
@@ -54,17 +101,57 @@ def get_recent_document_snapshots(
     if source:
         statement = statement.where(SourceDocument.source == source)
     rows = session.execute(statement).all()
-    return [
-        DocumentSnapshot(
-            id=document.id,
-            title=document.title or "",
-            text=document.text or "",
-            source=document.source,
-            occurred_at=document.published_at,
-            has_entities=bool(has_entities),
+    return [_snapshot(document, has_entities) for document, has_entities in rows]
+
+
+def get_entity_extraction_states(
+    session: Session,
+    document_ids: list[int],
+) -> dict[int, EntityExtractionState]:
+    if not document_ids:
+        return {}
+    return {
+        state.document_id: state
+        for state in session.scalars(
+            select(EntityExtractionState).where(
+                EntityExtractionState.document_id.in_(document_ids)
+            )
         )
-        for document, has_entities in rows
-    ]
+    }
+
+
+def replace_document_entities_with_state(
+    session: Session,
+    *,
+    document: DocumentSnapshot,
+    candidates: list[EntityCandidate],
+    input_hash: str,
+    model_name: str,
+    pipeline_version: str,
+    label_version: str,
+    model_succeeded: bool,
+    processed_at: datetime,
+) -> int:
+    session.execute(delete(EntityMention).where(EntityMention.document_id == document.id))
+    inserted = _add_entity_mentions(
+        session,
+        document=document,
+        candidates=candidates,
+        created_at=processed_at,
+    )
+    state = session.get(EntityExtractionState, document.id)
+    if state is None:
+        state = EntityExtractionState(document_id=document.id)
+        session.add(state)
+    state.input_hash = input_hash
+    state.model_name = model_name
+    state.pipeline_version = pipeline_version
+    state.label_version = label_version
+    state.model_succeeded = model_succeeded
+    state.mention_count = inserted
+    state.processed_at = processed_at
+    session.commit()
+    return inserted
 
 
 def replace_document_entities(
@@ -93,7 +180,23 @@ def replace_document_entities(
         if existing_keys:
             return 0
 
-    created_at = datetime.now()
+    inserted = _add_entity_mentions(
+        session,
+        document=document,
+        candidates=candidates,
+        created_at=datetime.now(),
+    )
+    session.commit()
+    return inserted
+
+
+def _add_entity_mentions(
+    session: Session,
+    *,
+    document: DocumentSnapshot,
+    candidates: list[EntityCandidate],
+    created_at: datetime,
+) -> int:
     inserted = 0
     seen: set[tuple[str, str, int | None, int | None]] = set()
     for candidate in candidates:
@@ -124,8 +227,18 @@ def replace_document_entities(
             )
         )
         inserted += 1
-    session.commit()
     return inserted
+
+
+def _snapshot(document: SourceDocument, has_entities: bool) -> DocumentSnapshot:
+    return DocumentSnapshot(
+        id=document.id,
+        title=document.title or "",
+        text=document.text or "",
+        source=document.source,
+        occurred_at=document.published_at,
+        has_entities=bool(has_entities),
+    )
 
 
 def get_entity_summary(
