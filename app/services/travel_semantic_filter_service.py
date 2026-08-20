@@ -13,6 +13,14 @@ from app.context_v2.semantic_scorer import (
     SemanticScorer,
     build_candidate_embedding_text,
 )
+from app.context_v2.semantic_precision import (
+    CalibratedSemanticScore,
+    SemanticPrecisionEvidence,
+    build_semantic_precision_evidence,
+    calibrate_semantic_score,
+    load_generic_topic_terms,
+)
+from app.keywords.tokenizer import Tokenizer
 from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
 from app.repositories import travel_opportunity_repository as repo
 
@@ -32,6 +40,9 @@ class SemanticCandidatePreview:
     semantic_positive_category: str
     semantic_negative_score: float
     semantic_negative_category: str
+    semantic_margin: float
+    semantic_confidence: float
+    reasoning_codes: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -47,6 +58,7 @@ class SemanticFilterResult:
     estimated_gemini_candidates: int
     top_candidates: list[SemanticCandidatePreview]
     model_name: str
+    scoring_version: str
     cache_hits: int
 
 
@@ -58,6 +70,7 @@ def semantic_filter_travel_opportunities(
     dry_run: bool,
     force: bool,
     limit: int,
+    topic_tokenizer: Tokenizer | None = None,
 ) -> SemanticFilterResult:
     settings = get_settings()
     resolved_start, _ = repo.resolve_week_range(session, week_start)
@@ -68,6 +81,7 @@ def semantic_filter_travel_opportunities(
             dry_run=dry_run,
             week_start=resolved_start,
             model_name=model_name,
+            scoring_version=scorer.scoring_version,
         )
     if resolved_start is None:
         return _empty_result(
@@ -75,6 +89,7 @@ def semantic_filter_travel_opportunities(
             dry_run=dry_run,
             week_start=None,
             model_name=model_name,
+            scoring_version=scorer.scoring_version,
         )
 
     candidates = repo.get_semantic_filter_candidates(
@@ -82,6 +97,25 @@ def semantic_filter_travel_opportunities(
         week_start=resolved_start,
         limit=limit,
     )
+    quality_signals = repo.get_semantic_keyword_quality_signals(
+        session,
+        candidates=candidates,
+    )
+    context_entities = repo.get_semantic_context_entities(
+        session,
+        candidates=candidates,
+    )
+    generic_terms = load_generic_topic_terms()
+    precision_evidence = {
+        candidate.id: build_semantic_precision_evidence(
+            candidate,
+            quality_signal=quality_signals.get(candidate.id),
+            context_entities=context_entities.get(candidate.id, []),
+            generic_terms=generic_terms,
+            tokenizer=topic_tokenizer,
+        )
+        for candidate in candidates
+    }
     pending_rows: list[TravelOpportunityCandidate] = []
     pending_texts: list[str] = []
     previews: list[SemanticCandidatePreview] = []
@@ -99,12 +133,19 @@ def semantic_filter_travel_opportunities(
             model_name=model_name,
             context_hash=candidate.keyword_context.context_hash,
             anchor_version=scorer.anchors.version,
+            scoring_version=scorer.scoring_version,
             candidate_text=candidate_text,
             scorer_signature=scorer.cache_signature,
+            precision_signature=precision_evidence[candidate.id].cache_signature,
         )
         if not force and _is_cache_hit(candidate, input_hash=input_hash, model_name=model_name):
             cache_hits += 1
-            preview = _preview_from_candidate(candidate)
+            calibrated = _calibrate_stored_candidate(
+                candidate,
+                evidence=precision_evidence[candidate.id],
+                scorer=scorer,
+            )
+            preview = _preview_from_candidate(candidate, calibrated=calibrated)
             previews.append(preview)
             status_counts[preview.semantic_status] += 1
             continue
@@ -119,8 +160,15 @@ def semantic_filter_travel_opportunities(
             model_name=model_name,
             context_hash=candidate.keyword_context.context_hash,
             anchor_version=scorer.anchors.version,
+            scoring_version=scorer.scoring_version,
             candidate_text=candidate_text,
             scorer_signature=scorer.cache_signature,
+            precision_signature=precision_evidence[candidate.id].cache_signature,
+        )
+        calibrated = _calibrate_score(
+            score,
+            evidence=precision_evidence[candidate.id],
+            scorer=scorer,
         )
         values_by_id[candidate.id] = {
             "embedding_model": model_name,
@@ -128,15 +176,15 @@ def semantic_filter_travel_opportunities(
             "semantic_positive_category": score.positive_category,
             "semantic_negative_score": score.best_negative_similarity,
             "semantic_negative_category": score.negative_category,
-            "semantic_travel_score": score.semantic_travel_score,
-            "semantic_status": score.semantic_status,
+            "semantic_travel_score": calibrated.semantic_travel_score,
+            "semantic_status": calibrated.semantic_status,
             "embedding_input_hash": input_hash,
             "semantic_calculated_at": now,
             "updated_at": now,
         }
-        preview = _preview_from_score(candidate, score)
+        preview = _preview_from_score(candidate, score, calibrated=calibrated)
         previews.append(preview)
-        status_counts[score.semantic_status] += 1
+        status_counts[calibrated.semantic_status] += 1
 
     if not dry_run:
         repo.save_semantic_results(session, values_by_id=values_by_id)
@@ -168,6 +216,7 @@ def semantic_filter_travel_opportunities(
         estimated_gemini_candidates=estimated,
         top_candidates=top_candidates,
         model_name=model_name,
+        scoring_version=scorer.scoring_version,
         cache_hits=cache_hits,
     )
 
@@ -177,11 +226,21 @@ def semantic_input_hash(
     model_name: str,
     context_hash: str,
     anchor_version: str,
+    scoring_version: str,
     candidate_text: str,
     scorer_signature: str,
+    precision_signature: str,
 ) -> str:
     payload = "\x1f".join(
-        (model_name, context_hash, anchor_version, scorer_signature, candidate_text)
+        (
+            model_name,
+            context_hash,
+            anchor_version,
+            scoring_version,
+            scorer_signature,
+            precision_signature,
+            candidate_text,
+        )
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -214,23 +273,30 @@ def _is_cache_hit(
 def _preview_from_score(
     candidate: TravelOpportunityCandidate,
     score: SemanticScore,
+    *,
+    calibrated: CalibratedSemanticScore,
 ) -> SemanticCandidatePreview:
     return SemanticCandidatePreview(
         keyword=candidate.keyword,
         normalized_keyword=candidate.normalized_keyword,
         travel_category=candidate.travel_category,
         prefilter_status=candidate.prefilter_status,
-        semantic_travel_score=score.semantic_travel_score,
-        semantic_status=score.semantic_status,
+        semantic_travel_score=calibrated.semantic_travel_score,
+        semantic_status=calibrated.semantic_status,
         semantic_positive_score=score.best_positive_similarity,
         semantic_positive_category=score.positive_category,
         semantic_negative_score=score.best_negative_similarity,
         semantic_negative_category=score.negative_category,
+        semantic_margin=calibrated.semantic_margin,
+        semantic_confidence=calibrated.semantic_confidence,
+        reasoning_codes=calibrated.reasoning_codes,
     )
 
 
 def _preview_from_candidate(
     candidate: TravelOpportunityCandidate,
+    *,
+    calibrated: CalibratedSemanticScore,
 ) -> SemanticCandidatePreview:
     return SemanticCandidatePreview(
         keyword=candidate.keyword,
@@ -243,6 +309,45 @@ def _preview_from_candidate(
         semantic_positive_category=str(candidate.semantic_positive_category),
         semantic_negative_score=float(candidate.semantic_negative_score),
         semantic_negative_category=str(candidate.semantic_negative_category),
+        semantic_margin=calibrated.semantic_margin,
+        semantic_confidence=calibrated.semantic_confidence,
+        reasoning_codes=calibrated.reasoning_codes,
+    )
+
+
+def _calibrate_score(
+    score: SemanticScore,
+    *,
+    evidence: SemanticPrecisionEvidence,
+    scorer: SemanticScorer,
+) -> CalibratedSemanticScore:
+    return calibrate_semantic_score(
+        positive_similarity=score.best_positive_similarity,
+        positive_category=score.positive_category,
+        negative_similarity=score.best_negative_similarity,
+        negative_category=score.negative_category,
+        evidence=evidence,
+        reject_threshold=scorer.reject_threshold,
+        review_threshold=scorer.review_threshold,
+        strong_threshold=scorer.strong_threshold,
+    )
+
+
+def _calibrate_stored_candidate(
+    candidate: TravelOpportunityCandidate,
+    *,
+    evidence: SemanticPrecisionEvidence,
+    scorer: SemanticScorer,
+) -> CalibratedSemanticScore:
+    return calibrate_semantic_score(
+        positive_similarity=float(candidate.semantic_positive_score),
+        positive_category=str(candidate.semantic_positive_category),
+        negative_similarity=float(candidate.semantic_negative_score),
+        negative_category=str(candidate.semantic_negative_category),
+        evidence=evidence,
+        reject_threshold=scorer.reject_threshold,
+        review_threshold=scorer.review_threshold,
+        strong_threshold=scorer.strong_threshold,
     )
 
 
@@ -252,6 +357,7 @@ def _empty_result(
     dry_run: bool,
     week_start: date | None,
     model_name: str,
+    scoring_version: str,
 ) -> SemanticFilterResult:
     return SemanticFilterResult(
         status=status,
@@ -265,5 +371,6 @@ def _empty_result(
         estimated_gemini_candidates=0,
         top_candidates=[],
         model_name=model_name,
+        scoring_version=scoring_version,
         cache_hits=0,
     )

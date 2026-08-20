@@ -79,6 +79,7 @@ def _cached_semantic_scorer(
     batch_size: int,
     enabled: bool,
     anchor_version: str,
+    scoring_version: str,
     reject_threshold: float,
     review_threshold: float,
     strong_threshold: float,
@@ -105,6 +106,7 @@ def _cached_semantic_scorer(
         reject_threshold=reject_threshold,
         review_threshold=review_threshold,
         strong_threshold=strong_threshold,
+        scoring_version=scoring_version,
     )
 
 
@@ -118,6 +120,7 @@ def get_travel_semantic_scorer() -> SemanticScorer:
                 settings.travel_embedding_batch_size,
                 settings.travel_embedding_enabled,
                 settings.travel_semantic_anchor_version,
+                settings.travel_semantic_scoring_version,
                 settings.travel_semantic_reject_threshold,
                 settings.travel_semantic_review_threshold,
                 settings.travel_semantic_strong_threshold,
@@ -185,7 +188,7 @@ def semantic_filter(
             force=force,
             limit=limit,
         )
-    except (ImportError, OSError, RuntimeError) as exc:
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Local semantic model unavailable: {type(exc).__name__}",

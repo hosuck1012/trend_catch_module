@@ -67,6 +67,9 @@ class SemanticCandidatePreviewResponse(BaseModel):
     semantic_positive_category: str
     semantic_negative_score: float
     semantic_negative_category: str
+    semantic_margin: float
+    semantic_confidence: float
+    reasoning_codes: list[str] = Field(default_factory=list)
 
 
 class SemanticFilterResponse(BaseModel):
@@ -81,6 +84,7 @@ class SemanticFilterResponse(BaseModel):
     estimated_gemini_candidates: int
     top_candidates: list[SemanticCandidatePreviewResponse] = Field(default_factory=list)
     model_name: str
+    scoring_version: str
     cache_hits: int
 
 

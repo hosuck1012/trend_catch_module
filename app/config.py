@@ -78,6 +78,7 @@ class Settings:
     travel_semantic_review_threshold: float
     travel_semantic_strong_threshold: float
     travel_semantic_anchor_version: str
+    travel_semantic_scoring_version: str
     travel_gemini_max_candidates_per_week: int
     travel_gemini_cache_enabled: bool
     travel_gemini_max_input_chars: int
@@ -199,6 +200,9 @@ def get_settings() -> Settings:
         ),
         travel_semantic_anchor_version=os.getenv(
             "TRAVEL_SEMANTIC_ANCHOR_VERSION", "v1"
+        ).strip(),
+        travel_semantic_scoring_version=os.getenv(
+            "TRAVEL_SEMANTIC_SCORING_VERSION", "v2"
         ).strip(),
         travel_gemini_max_candidates_per_week=_int_from_env(
             "TRAVEL_GEMINI_MAX_CANDIDATES_PER_WEEK", 3

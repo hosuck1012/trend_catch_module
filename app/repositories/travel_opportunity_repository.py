@@ -346,6 +346,74 @@ def get_semantic_filter_candidates(
     )
 
 
+def get_semantic_keyword_quality_signals(
+    session: Session,
+    *,
+    candidates: list[TravelOpportunityCandidate],
+) -> dict[int, KeywordCandidate]:
+    if not candidates:
+        return {}
+    document_ids = {
+        candidate.keyword_context.document_id for candidate in candidates
+    }
+    normalized_keywords = {candidate.normalized_keyword for candidate in candidates}
+    quality_rows = session.scalars(
+        select(KeywordCandidate)
+        .where(
+            KeywordCandidate.document_id.in_(document_ids),
+            KeywordCandidate.normalized_candidate.in_(normalized_keywords),
+            KeywordCandidate.accepted.is_(True),
+            KeywordCandidate.pipeline_version == get_settings().keyword_pipeline_version,
+        )
+        .order_by(KeywordCandidate.quality_score.desc(), KeywordCandidate.id.desc())
+    ).all()
+    best_by_key: dict[tuple[int, str], KeywordCandidate] = {}
+    for row in quality_rows:
+        best_by_key.setdefault(
+            (row.document_id, row.normalized_candidate),
+            row,
+        )
+    return {
+        candidate.id: signal
+        for candidate in candidates
+        if (
+            signal := best_by_key.get(
+                (
+                    candidate.keyword_context.document_id,
+                    candidate.normalized_keyword,
+                )
+            )
+        )
+        is not None
+    }
+
+
+def get_semantic_context_entities(
+    session: Session,
+    *,
+    candidates: list[TravelOpportunityCandidate],
+) -> dict[int, list[EntityMention]]:
+    if not candidates:
+        return {}
+    document_ids = {
+        candidate.keyword_context.document_id for candidate in candidates
+    }
+    mentions = session.scalars(
+        select(EntityMention)
+        .where(EntityMention.document_id.in_(document_ids))
+        .order_by(EntityMention.confidence.desc(), EntityMention.id.asc())
+    ).all()
+    by_document: dict[int, list[EntityMention]] = {
+        document_id: [] for document_id in document_ids
+    }
+    for mention in mentions:
+        by_document[mention.document_id].append(mention)
+    return {
+        candidate.id: by_document[candidate.keyword_context.document_id]
+        for candidate in candidates
+    }
+
+
 def save_semantic_results(
     session: Session,
     *,

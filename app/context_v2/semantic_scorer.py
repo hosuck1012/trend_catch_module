@@ -11,17 +11,16 @@ from app.context_v2.embedding_adapter import EmbeddingAdapter
 from app.context_v2.travel_taxonomy import TravelCategory
 
 
-SEMANTIC_SCORER_VERSION = "v2-step2-local-1"
-SCORE_BASE = 0.50
-SIMILARITY_MARGIN_WEIGHT = 12.5
-DOMINANT_SPECIFIC_NEGATIVE_PENALTY = 0.15
+SEMANTIC_SCORER_VERSION = "v2-step3-precision-1"
+MARGIN_FULL_CONFIDENCE = 0.02
+MARGIN_SCORE_FLOOR = 0.35
+MARGIN_SCORE_RANGE = 0.35
 POSITIVE_SECTION = "positive"
 NEGATIVE_SECTION = "negative"
 NEGATIVE_ENTITY_HINTS = {
     "FINANCE": "BRAND",
     "LEGAL": "PERSON",
 }
-SPECIFIC_NEGATIVE_CATEGORIES = {"FINANCE", "LEGAL", "POLITICS", "ACCIDENT"}
 DEFAULT_ANCHOR_PATH = Path(__file__).resolve().parents[2] / "data" / "travel_semantic_anchors.json"
 
 
@@ -39,6 +38,8 @@ class SemanticScore:
     positive_category: str
     best_negative_similarity: float
     negative_category: str
+    semantic_margin: float
+    semantic_confidence: float
     semantic_travel_score: float
     semantic_status: str
 
@@ -103,6 +104,7 @@ class SemanticScorer:
         reject_threshold: float,
         review_threshold: float,
         strong_threshold: float,
+        scoring_version: str = "v1",
     ) -> None:
         if not 0 <= reject_threshold <= review_threshold <= strong_threshold <= 1:
             raise ValueError("Semantic thresholds must be ordered values between 0 and 1")
@@ -111,6 +113,7 @@ class SemanticScorer:
         self.reject_threshold = reject_threshold
         self.review_threshold = review_threshold
         self.strong_threshold = strong_threshold
+        self.scoring_version = scoring_version
         self._anchor_embeddings: list[list[float]] | None = None
         self._positive_keys: list[str] = []
         self._negative_keys: list[str] = []
@@ -121,6 +124,7 @@ class SemanticScorer:
         return "|".join(
             (
                 SEMANTIC_SCORER_VERSION,
+                self.scoring_version,
                 self.anchors.content_hash,
                 f"{self.reject_threshold:.12g}",
                 f"{self.review_threshold:.12g}",
@@ -146,6 +150,8 @@ class SemanticScorer:
             negative_index = max(range(len(negative_values)), key=negative_values.__getitem__)
             positive_similarity = positive_values[positive_index]
             negative_similarity = negative_values[negative_index]
+            margin = positive_similarity - negative_similarity
+            confidence = semantic_confidence_from_margin(margin)
             normalized_score = semantic_score_from_similarities(
                 positive_similarity,
                 negative_similarity,
@@ -157,6 +163,8 @@ class SemanticScorer:
                     positive_category=self._positive_keys[positive_index],
                     best_negative_similarity=round(negative_similarity, 6),
                     negative_category=self._negative_keys[negative_index],
+                    semantic_margin=round(margin, 6),
+                    semantic_confidence=round(confidence, 6),
                     semantic_travel_score=round(normalized_score * 100, 2),
                     semantic_status=classify_semantic_score(
                         normalized_score,
@@ -247,17 +255,22 @@ def semantic_score_from_similarities(
     *,
     negative_category: str,
 ) -> float:
-    """Map the narrow E5 cosine margin to 0..1 with an explicit negative penalty."""
-    negative_penalty = (
-        DOMINANT_SPECIFIC_NEGATIVE_PENALTY
-        if negative_category in SPECIFIC_NEGATIVE_CATEGORIES
-        and negative_similarity > positive_similarity
-        else 0.0
-    )
+    """Map a positive E5 margin conservatively; absolute cosine level is ignored."""
+    del negative_category
+    margin = positive_similarity - negative_similarity
+    if margin <= 0:
+        return 0.0
     return _clamp(
-        SCORE_BASE
-        + SIMILARITY_MARGIN_WEIGHT * (positive_similarity - negative_similarity)
-        - negative_penalty,
+        MARGIN_SCORE_FLOOR
+        + MARGIN_SCORE_RANGE * semantic_confidence_from_margin(margin),
         0.0,
         1.0,
     )
+
+
+def semantic_confidence_from_margin(margin: float) -> float:
+    if margin <= 0:
+        return 0.0
+    if margin >= MARGIN_FULL_CONFIDENCE - 1e-12:
+        return 1.0
+    return _clamp(margin / MARGIN_FULL_CONFIDENCE, 0.0, 1.0)

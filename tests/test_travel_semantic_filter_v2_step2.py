@@ -26,7 +26,14 @@ from app.context_v2.semantic_scorer import (
     load_semantic_anchors,
     semantic_score_from_similarities,
 )
+from app.context_v2.semantic_precision import (
+    build_semantic_precision_evidence,
+    calibrate_semantic_score,
+)
+from app.keywords.tokenizer import RegexFallbackTokenizer
 from app.main import app
+from app.models.entity_mention import EntityMention
+from app.models.keyword_candidate import KeywordCandidate
 from app.models.keyword_context import KeywordContext
 from app.models.source_document import SourceDocument
 from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
@@ -232,8 +239,8 @@ def test_realistic_close_e5_margins_cover_all_statuses() -> None:
     }
     cases = [
         (0.785, 0.80, "GENERAL_NON_TRAVEL", "semantic_rejected"),
-        (0.798, 0.80, "GENERAL_NON_TRAVEL", "semantic_weak"),
-        (0.804, 0.80, "GENERAL_NON_TRAVEL", "semantic_review"),
+        (0.8005, 0.80, "GENERAL_NON_TRAVEL", "semantic_weak"),
+        (0.812, 0.80, "GENERAL_NON_TRAVEL", "semantic_review"),
         (0.82, 0.80, "GENERAL_NON_TRAVEL", "semantic_strong"),
         (0.805, 0.81, "FINANCE", "semantic_rejected"),
     ]
@@ -247,53 +254,279 @@ def test_realistic_close_e5_margins_cover_all_statuses() -> None:
 
 
 def test_input_hash_changes_for_model_context_anchor_or_text() -> None:
-    base = semantic_input_hash(
-        model_name="model-a",
-        context_hash="context-a",
-        anchor_version="v1",
-        candidate_text="text-a",
-        scorer_signature="scorer-a",
-    )
+    defaults = {
+        "model_name": "model-a",
+        "context_hash": "context-a",
+        "anchor_version": "v1",
+        "scoring_version": "v2",
+        "candidate_text": "text-a",
+        "scorer_signature": "scorer-a",
+        "precision_signature": "precision-a",
+    }
+    base = semantic_input_hash(**defaults)
     variants = {
-        semantic_input_hash(
-            model_name="model-b",
-            context_hash="context-a",
-            anchor_version="v1",
-            candidate_text="text-a",
-            scorer_signature="scorer-a",
-        ),
-        semantic_input_hash(
-            model_name="model-a",
-            context_hash="context-b",
-            anchor_version="v1",
-            candidate_text="text-a",
-            scorer_signature="scorer-a",
-        ),
-        semantic_input_hash(
-            model_name="model-a",
-            context_hash="context-a",
-            anchor_version="v2",
-            candidate_text="text-a",
-            scorer_signature="scorer-a",
-        ),
-        semantic_input_hash(
-            model_name="model-a",
-            context_hash="context-a",
-            anchor_version="v1",
-            candidate_text="text-b",
-            scorer_signature="scorer-a",
-        ),
-        semantic_input_hash(
-            model_name="model-a",
-            context_hash="context-a",
-            anchor_version="v1",
-            candidate_text="text-a",
-            scorer_signature="scorer-b",
-        ),
+        semantic_input_hash(**(defaults | {"model_name": "model-b"})),
+        semantic_input_hash(**(defaults | {"context_hash": "context-b"})),
+        semantic_input_hash(**(defaults | {"anchor_version": "v2"})),
+        semantic_input_hash(**(defaults | {"scoring_version": "v3"})),
+        semantic_input_hash(**(defaults | {"candidate_text": "text-b"})),
+        semantic_input_hash(**(defaults | {"scorer_signature": "scorer-b"})),
+        semantic_input_hash(**(defaults | {"precision_signature": "precision-b"})),
     }
     assert len(base) == 64
     assert base not in variants
-    assert len(variants) == 5
+    assert len(variants) == 7
+
+
+@pytest.mark.parametrize("keyword", ["가격", "친절", "적용", "도전", "주역"])
+def test_generic_single_topic_is_rejected_despite_travel_context(keyword: str) -> None:
+    candidate = _precision_candidate(
+        keyword=keyword,
+        entity_type=None,
+        travel_category="OTHER",
+        context="보령머드축제 행사에서 관광객을 위한 프로그램을 진행한다.",
+    )
+    evidence = build_semantic_precision_evidence(
+        candidate,
+        quality_signal=None,
+        context_entities=[],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+
+    result = _calibrate(
+        evidence,
+        positive_category="FESTIVAL",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status == "semantic_rejected"
+    assert result.semantic_travel_score == 0
+    assert "GENERIC_TOPIC" in result.reasoning_codes
+    assert "TOPIC_SPECIFICITY_FAIL" in result.reasoning_codes
+    assert "CATEGORY_CONTEXT_MATCH" in result.reasoning_codes
+
+
+def test_single_high_value_entity_and_multi_token_topic_are_exceptions() -> None:
+    location = _precision_candidate(
+        keyword="제주",
+        entity_type="LOCATION",
+        travel_category="LANDMARK",
+        context="제주의 관광 명소를 소개한다.",
+    )
+    location_evidence = build_semantic_precision_evidence(
+        location,
+        quality_signal=None,
+        context_entities=[],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+    phrase = _precision_candidate(
+        keyword="성수 팝업",
+        entity_type=None,
+        travel_category="POPUP",
+        context="성수에서 새로운 팝업스토어가 열린다.",
+    )
+    phrase_evidence = build_semantic_precision_evidence(
+        phrase,
+        quality_signal=None,
+        context_entities=[],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+
+    location_result = _calibrate(
+        location_evidence,
+        positive_category="LANDMARK",
+        positive=0.81,
+        negative=0.80,
+    )
+    phrase_result = _calibrate(
+        phrase_evidence,
+        positive_category="POPUP",
+        positive=0.81,
+        negative=0.80,
+    )
+
+    assert location_result.semantic_status == "semantic_review"
+    assert "HIGH_VALUE_ENTITY" in location_result.reasoning_codes
+    assert phrase_result.semantic_status == "semantic_review"
+    assert "MULTI_TOKEN_TOPIC" in phrase_result.reasoning_codes
+
+
+def test_category_coherence_failure_caps_specific_topic_at_weak() -> None:
+    candidate = _precision_candidate(
+        keyword="두바이 초콜릿",
+        entity_type=None,
+        travel_category="FOOD",
+        context="두바이 초콜릿이 성수동 카페에서 판매된다.",
+    )
+    evidence = build_semantic_precision_evidence(
+        candidate,
+        quality_signal=None,
+        context_entities=[],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+
+    result = _calibrate(
+        evidence,
+        positive_category="FESTIVAL",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status == "semantic_weak"
+    assert result.semantic_travel_score == 54.99
+    assert "SEMANTIC_CATEGORY_UNSUPPORTED" in result.reasoning_codes
+
+
+def test_multi_token_generic_phrase_does_not_pass_specificity() -> None:
+    candidate = _precision_candidate(
+        keyword="가격 인상",
+        entity_type=None,
+        travel_category="OTHER",
+        context="축제 입장권 가격 인상 기준이 적용됐다.",
+    )
+    evidence = build_semantic_precision_evidence(
+        candidate,
+        quality_signal=None,
+        context_entities=[],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+
+    result = _calibrate(
+        evidence,
+        positive_category="FESTIVAL",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status == "semantic_rejected"
+    assert "GENERIC_TOPIC" in result.reasoning_codes
+
+
+def test_context_entity_exception_requires_keyword_match() -> None:
+    candidate = _precision_candidate(
+        keyword="제주",
+        entity_type=None,
+        travel_category="LANDMARK",
+        context="제주 관광 명소를 소개한다.",
+    )
+    matching = SimpleNamespace(
+        text="제주",
+        normalized_text="제주",
+        entity_type="LOCATION",
+        confidence=0.9,
+    )
+    unrelated = SimpleNamespace(
+        text="부산불꽃축제",
+        normalized_text="부산불꽃축제",
+        entity_type="EVENT",
+        confidence=0.9,
+    )
+    location_evidence = build_semantic_precision_evidence(
+        candidate,
+        quality_signal=None,
+        context_entities=[matching],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+    generic = _precision_candidate(
+        keyword="프로그램",
+        entity_type=None,
+        travel_category="FESTIVAL",
+        context="부산불꽃축제 프로그램을 안내한다.",
+    )
+    generic_evidence = build_semantic_precision_evidence(
+        generic,
+        quality_signal=None,
+        context_entities=[unrelated],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+
+    assert location_evidence.topic_specificity_pass is True
+    assert "HIGH_VALUE_ENTITY" in location_evidence.topic_codes
+    assert generic_evidence.topic_specificity_pass is False
+
+
+def test_safety_caps_hold_with_non_default_thresholds() -> None:
+    candidate = _precision_candidate(
+        keyword="두바이 초콜릿",
+        entity_type="FOOD",
+        travel_category="FOOD",
+        context="두바이 초콜릿이 카페에서 판매된다.",
+    )
+    evidence = build_semantic_precision_evidence(
+        candidate,
+        quality_signal=None,
+        context_entities=[],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+    unsupported = calibrate_semantic_score(
+        positive_similarity=0.88,
+        positive_category="FESTIVAL",
+        negative_similarity=0.84,
+        negative_category="GENERAL_NON_TRAVEL",
+        evidence=evidence,
+        reject_threshold=0.0,
+        review_threshold=0.50,
+        strong_threshold=0.54,
+    )
+    generic = _precision_candidate(
+        keyword="가격",
+        entity_type=None,
+        travel_category="OTHER",
+        context="여행 가격 정보다.",
+    )
+    generic_evidence = build_semantic_precision_evidence(
+        generic,
+        quality_signal=None,
+        context_entities=[],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+    rejected = calibrate_semantic_score(
+        positive_similarity=0.88,
+        positive_category="FESTIVAL",
+        negative_similarity=0.84,
+        negative_category="GENERAL_NON_TRAVEL",
+        evidence=generic_evidence,
+        reject_threshold=0.0,
+        review_threshold=0.50,
+        strong_threshold=0.54,
+    )
+
+    assert unsupported.semantic_status == "semantic_weak"
+    assert rejected.semantic_status == "semantic_rejected"
+
+
+def test_margin_gate_rejects_negative_and_caps_low_positive_margin() -> None:
+    candidate = _precision_candidate(
+        keyword="부산불꽃축제",
+        entity_type="EVENT",
+        travel_category="FESTIVAL",
+        context="부산 광안리에서 부산불꽃축제가 개최된다.",
+    )
+    evidence = build_semantic_precision_evidence(
+        candidate,
+        quality_signal=None,
+        context_entities=[],
+        tokenizer=RegexFallbackTokenizer(),
+    )
+
+    negative = _calibrate(
+        evidence,
+        positive_category="FESTIVAL",
+        positive=0.84,
+        negative=0.85,
+    )
+    low = _calibrate(
+        evidence,
+        positive_category="FESTIVAL",
+        positive=0.8505,
+        negative=0.85,
+    )
+
+    assert negative.semantic_status == "semantic_rejected"
+    assert "NEGATIVE_SEMANTIC_DOMINANT" in negative.reasoning_codes
+    assert low.semantic_status == "semantic_weak"
+    assert "LOW_SEMANTIC_MARGIN" in low.reasoning_codes
 
 
 def test_service_includes_weak_excludes_rejected_persists_and_caches(db_session) -> None:
@@ -360,6 +593,105 @@ def test_service_includes_weak_excludes_rejected_persists_and_caches(db_session)
     )
     assert cached.cache_hits == 4
     assert len(scorer.adapter.encoded_passages) == passage_calls
+
+
+def test_service_rejects_generic_topics_with_fake_adapter(db_session) -> None:
+    for index, keyword in enumerate(("가격", "친절", "적용", "도전", "주역")):
+        _add_candidate(
+            db_session,
+            key=f"generic-{index}",
+            keyword=keyword,
+            normalized=keyword,
+            context="보령머드축제 행사에서 관광객을 위한 프로그램을 진행한다.",
+            entity_type=None,
+            category="OTHER",
+        )
+
+    result = semantic_filter_travel_opportunities(
+        db_session,
+        scorer=_semantic_scorer(),
+        week_start=WEEK_START,
+        dry_run=True,
+        force=False,
+        limit=100,
+        topic_tokenizer=RegexFallbackTokenizer(),
+    )
+
+    assert result.processed == 5
+    assert result.semantic_rejected == 5
+    assert result.semantic_review == 0
+    assert result.semantic_strong == 0
+    assert all("GENERIC_TOPIC" in row.reasoning_codes for row in result.top_candidates)
+
+
+def test_brand_sports_topic_requires_event_location_or_visit_evidence(db_session) -> None:
+    plain = _add_candidate(
+        db_session,
+        key="brand-plain",
+        keyword="두산",
+        normalized="두산",
+        context="두산은 리그 순위에서 4위로 올라섰고 승차를 3경기로 좁혔다.",
+        entity_type="BRAND",
+        category="SPORTS_EVENT",
+        quality_entity_type="BRAND",
+        context_entity_types=(("서울", "LOCATION"),),
+    )
+    visit = _add_candidate(
+        db_session,
+        key="brand-visit",
+        keyword="두산",
+        normalized="두산",
+        context="서울 잠실야구장에서 열리는 두산 홈 경기를 관람하려고 팬들이 방문한다.",
+        entity_type="BRAND",
+        category="SPORTS_EVENT",
+        quality_entity_type="BRAND",
+        context_entity_types=(("서울", "LOCATION"), ("두산 홈 경기", "EVENT")),
+    )
+
+    semantic_filter_travel_opportunities(
+        db_session,
+        scorer=_semantic_scorer(),
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=100,
+        topic_tokenizer=RegexFallbackTokenizer(),
+    )
+    db_session.expire_all()
+
+    assert plain.semantic_status not in {"semantic_review", "semantic_strong"}
+    assert visit.semantic_status in {"semantic_review", "semantic_strong"}
+
+
+def test_scoring_version_change_invalidates_force_false_cache(db_session) -> None:
+    candidate = _seed_candidates(db_session)["festival"]
+    first = _semantic_scorer(scoring_version="v1")
+    semantic_filter_travel_opportunities(
+        db_session,
+        scorer=first,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=100,
+        topic_tokenizer=RegexFallbackTokenizer(),
+    )
+    first_hash = candidate.embedding_input_hash
+    second = _semantic_scorer(scoring_version="v2")
+
+    result = semantic_filter_travel_opportunities(
+        db_session,
+        scorer=second,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=100,
+        topic_tokenizer=RegexFallbackTokenizer(),
+    )
+    db_session.expire_all()
+
+    assert result.cache_hits == 0
+    assert candidate.embedding_input_hash != first_hash
+    assert second.adapter.encoded_passages
 
 
 def test_disabled_service_returns_without_db_changes(monkeypatch, db_session) -> None:
@@ -436,6 +768,8 @@ def test_semantic_api_dry_run_and_gemini_not_called(monkeypatch, client, db_sess
     assert payload["semantic_rejected"] == 1
     assert payload["estimated_gemini_candidates"] == 3
     assert payload["model_name"] == "fake-e5"
+    assert payload["scoring_version"] == "v2"
+    assert payload["top_candidates"][0]["reasoning_codes"]
     assert candidates["film"].semantic_status is None
 
 
@@ -539,29 +873,69 @@ def test_ranking_negative_penalty_requires_negative_similarity_to_dominate(db_se
     assert positive_dominant - negative_dominant == 45
 
 
-def _semantic_scorer() -> SemanticScorer:
+def _semantic_scorer(*, scoring_version: str = "v2") -> SemanticScorer:
     return SemanticScorer(
         adapter=FakeEmbeddingAdapter(_semantic_vector),
         anchors=load_semantic_anchors(),
         reject_threshold=0.35,
         review_threshold=0.55,
         strong_threshold=0.70,
+        scoring_version=scoring_version,
     )
 
 
 def _semantic_vector(text: str) -> list[float]:
     lowered = text.lower()
     if any(term in lowered for term in ("주가", "영업이익", "금융시장", "투자 전망")):
-        return [0, 0, 0, 1, 0, 0]
+        return [0, 0, 0, 0, 1, 0, 0]
     if any(term in lowered for term in ("법적 분쟁", "재판", "소송", "법적 처벌")):
-        return [0, 0, 0, 0, 1, 0]
+        return [0, 0, 0, 0, 0, 1, 0]
     if any(term in lowered for term in ("영화", "로케이션")):
-        return [1, 0, 0, 0, 0, 0]
+        return [1, 0, 0, 0, 0, 0, 0]
     if any(term in lowered for term in ("축제", "행사 개최")):
-        return [0, 1, 0, 0, 0, 0]
+        return [0, 1, 0, 0, 0, 0, 0]
     if any(term in lowered for term in ("음식", "디저트", "맛집")):
-        return [0, 0, 1, 0, 0, 0]
-    return [0, 0, 0, 0, 0, 1]
+        return [0, 0, 1, 0, 0, 0, 0]
+    if any(term in lowered for term in ("스포츠", "경기", "마라톤", "야구")):
+        return [0, 0, 0, 1, 0, 0, 0]
+    return [0, 0, 0, 0, 0, 0, 1]
+
+
+def _precision_candidate(
+    *,
+    keyword: str,
+    entity_type: str | None,
+    travel_category: str,
+    context: str,
+):
+    return SimpleNamespace(
+        keyword=keyword,
+        normalized_keyword=keyword.replace(" ", ""),
+        primary_entity=keyword if entity_type else None,
+        primary_entity_type=entity_type,
+        travel_category=travel_category,
+        matched_positive_terms_json="[]",
+        keyword_context=SimpleNamespace(combined_context=context),
+    )
+
+
+def _calibrate(
+    evidence,
+    *,
+    positive_category: str,
+    positive: float,
+    negative: float,
+):
+    return calibrate_semantic_score(
+        positive_similarity=positive,
+        positive_category=positive_category,
+        negative_similarity=negative,
+        negative_category="GENERAL_NON_TRAVEL",
+        evidence=evidence,
+        reject_threshold=0.35,
+        review_threshold=0.55,
+        strong_threshold=0.70,
+    )
 
 
 def _seed_candidates(db_session) -> dict[str, TravelOpportunityCandidate]:
@@ -680,3 +1054,108 @@ def _seed_candidates(db_session) -> dict[str, TravelOpportunityCandidate]:
         result[key] = candidate
     db_session.commit()
     return result
+
+
+def _add_candidate(
+    db_session,
+    *,
+    key: str,
+    keyword: str,
+    normalized: str,
+    context: str,
+    entity_type: str | None,
+    category: str,
+    quality_entity_type: str | None = None,
+    context_entity_types: tuple[tuple[str, str], ...] = (),
+) -> TravelOpportunityCandidate:
+    document = SourceDocument(
+        source="test",
+        source_id=f"precision-{key}",
+        title=keyword,
+        text=context,
+        published_at=NOW,
+        collected_at=NOW,
+        views=None,
+        likes=None,
+        comments=None,
+        url=None,
+    )
+    db_session.add(document)
+    db_session.flush()
+    keyword_context = KeywordContext(
+        document_id=document.id,
+        keyword=keyword,
+        normalized_keyword=normalized,
+        previous_sentence=None,
+        matched_sentence=context,
+        next_sentence=None,
+        combined_context=context,
+        occurrence_index=0,
+        source="test",
+        published_at=NOW,
+        context_hash=f"precision-context-{key}",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db_session.add(keyword_context)
+    db_session.flush()
+    if quality_entity_type:
+        db_session.add(
+            KeywordCandidate(
+                document_id=document.id,
+                candidate_text=keyword,
+                normalized_candidate=normalized,
+                candidate_type="entity",
+                extractor="ner",
+                quality_score=70,
+                accepted=True,
+                rejection_reason=None,
+                title_occurrence=1,
+                body_occurrence=1,
+                entity_type=quality_entity_type,
+                entity_confidence=0.9,
+                created_at=NOW,
+                pipeline_version="v2",
+            )
+        )
+    for index, (text, mention_type) in enumerate(context_entity_types):
+        db_session.add(
+            EntityMention(
+                document_id=document.id,
+                text=text,
+                normalized_text=text.replace(" ", ""),
+                entity_type=mention_type,
+                confidence=0.9,
+                extractor="merged",
+                start_char=index,
+                end_char=index + len(text),
+                source="test",
+                occurred_at=NOW,
+                created_at=NOW,
+            )
+        )
+    candidate = TravelOpportunityCandidate(
+        keyword=keyword,
+        normalized_keyword=normalized,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        keyword_context_id=keyword_context.id,
+        primary_entity=keyword if entity_type else None,
+        primary_entity_type=entity_type,
+        travel_category=category,
+        entity_prior_score=5,
+        positive_context_score=10,
+        negative_context_penalty=0,
+        trend_evidence_score=10,
+        source_diversity_score=5,
+        travel_pre_score=50,
+        prefilter_status="weak",
+        matched_positive_terms_json="[]",
+        matched_negative_terms_json="[]",
+        reasoning_codes_json="[]",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db_session.add(candidate)
+    db_session.commit()
+    return candidate
