@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 from pathlib import Path
 
 
@@ -20,6 +21,19 @@ def _load_word_set(filename: str, _modified_ns: int) -> frozenset[str]:
     )
 
 
+def load_json_word_set(filename: str, key: str) -> frozenset[str]:
+    path = DATA_DIR / filename
+    return _load_json_word_set(filename, key, path.stat().st_mtime_ns)
+
+
+@lru_cache(maxsize=None)
+def _load_json_word_set(filename: str, key: str, _modified_ns: int) -> frozenset[str]:
+    path = DATA_DIR / filename
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    values = payload.get(key, []) if isinstance(payload, dict) else payload
+    return frozenset(str(value).strip().lower() for value in values if str(value).strip())
+
+
 def rejection_reason(candidate: str, normalized: str) -> str | None:
     lowered = candidate.strip().lower()
     if normalized in load_word_set("url_artifacts.txt") or lowered in load_word_set(
@@ -31,6 +45,8 @@ def rejection_reason(candidate: str, normalized: str) -> str | None:
     if normalized in load_word_set("stopwords_ko.txt"):
         return "korean_stopword"
     if normalized in load_word_set("generic_travel_words.txt"):
+        return "generic_word"
+    if normalized in load_json_word_set("travel_generic_topic_terms.json", "terms"):
         return "generic_word"
     return None
 

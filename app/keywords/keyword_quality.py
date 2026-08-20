@@ -4,6 +4,10 @@ import re
 
 from app.config import Settings
 from app.keywords.candidate_extractor import CandidateEvidence
+from app.keywords.phrase_signals import (
+    is_standalone_phrase_suffix,
+    phrase_specificity_signal,
+)
 from app.keywords.stopword_filter import rejection_reason
 
 
@@ -40,15 +44,24 @@ def evaluate_candidate(
 ) -> QualityDecision:
     value = candidate.candidate_text
     normalized = candidate.normalized_candidate
+    specificity = phrase_specificity_signal(candidate.candidate_type, value)
+    if is_standalone_phrase_suffix(value):
+        return QualityDecision(0.0, False, "generic_word")
     immediate = rejection_reason(value, normalized)
     if immediate:
         return QualityDecision(0.0, False, immediate)
     if candidate.extractor != "protected_phrase" and " " in value:
+        parts = value.split()
         component_reason = next(
             (
                 rejection_reason(part, part.lower())
-                for part in value.split()
+                for index, part in enumerate(parts)
                 if rejection_reason(part, part.lower())
+                and not (
+                    specificity
+                    and index == len(parts) - 1
+                    and is_standalone_phrase_suffix(part)
+                )
             ),
             None,
         )
@@ -68,10 +81,18 @@ def evaluate_candidate(
         return QualityDecision(0.0, False, "invalid_characters")
     if candidate.extractor == "ner" and context.document_count < 2:
         return QualityDecision(0.0, False, "low_frequency")
-    if candidate.extractor in {"title_phrase", "kiwi_phrase"} and context.document_count < 2:
-        proper_compound = all(part[:1].isupper() for part in value.split())
-        if not candidate.entity_type and not proper_compound:
-            return QualityDecision(0.0, False, "low_frequency")
+    if (
+        candidate.extractor in {"title_phrase", "kiwi_phrase", "phrase_pattern"}
+        and context.document_count < 2
+    ):
+        if candidate.extractor == "phrase_pattern" and (
+            candidate.title_occurrence or specificity >= 3
+        ):
+            pass
+        else:
+            proper_compound = all(part[:1].isupper() for part in value.split())
+            if not candidate.entity_type and not proper_compound:
+                return QualityDecision(0.0, False, "low_frequency")
     if (
         candidate.extractor in {"title_phrase", "kiwi_phrase"}
         and not candidate.title_occurrence
@@ -90,6 +111,8 @@ def evaluate_candidate(
         score += min(20.0, 20.0 * settings.keyword_title_weight / 1.5)
     if candidate.candidate_type in {"noun_phrase", "protected_phrase"} or " " in value:
         score += min(15.0, 15.0 * settings.keyword_phrase_weight / 1.4)
+    if specificity and candidate.candidate_type == "specific_phrase":
+        score += 5.0
     if candidate.extractor == "protected_phrase":
         score += 10.0
     if candidate.entity_type:

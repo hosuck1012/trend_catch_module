@@ -3,8 +3,12 @@ import html
 import re
 
 from app.keywords.keyword_normalizer import normalize_display, normalize_keyword
-from app.keywords.phrase_extractor import is_noun, noun_phrases
-from app.keywords.protected_phrases import PROTECTABLE_ENTITY_TYPES, matching_phrases
+from app.keywords.phrase_extractor import is_noun, noun_phrases, specific_phrases
+from app.keywords.protected_phrases import (
+    PROTECTABLE_ENTITY_TYPES,
+    matching_phrases,
+    structural_phrases,
+)
 from app.keywords.tokenizer import Tokenizer
 
 
@@ -66,6 +70,8 @@ def extract_candidates(
 
     for phrase in matching_phrases(combined):
         raw.append((phrase, "protected_phrase", "protected_phrase", None, None))
+    for phrase in structural_phrases(clean_title, clean_body):
+        raw.append((phrase, "protected_phrase", "structural_phrase", None, None))
     for entity in entities or []:
         candidate_type = (
             "protected_entity" if entity.entity_type in PROTECTABLE_ENTITY_TYPES else "entity"
@@ -79,6 +85,8 @@ def extract_candidates(
         for token in tokens:
             if is_noun(token):
                 raw.append((token.text, "token", "kiwi_token", None, None))
+        for phrase in specific_phrases(section, tokens):
+            raw.append((phrase, "specific_phrase", "phrase_pattern", None, None))
         for phrase in noun_phrases(tokens):
             raw.append((phrase, "noun_phrase", extractor, None, None))
 
@@ -112,5 +120,14 @@ def _normalized_count(text: str, normalized: str) -> int:
 
 
 def _priority(candidate: CandidateEvidence) -> tuple[int, float, int]:
-    order = {"protected_phrase": 5, "ner": 4, "title_phrase": 3, "kiwi_phrase": 2, "hashtag": 2, "kiwi_token": 1}
+    order = {
+        "protected_phrase": 5,
+        "ner": 4,
+        "structural_phrase": 4,
+        "phrase_pattern": 4,
+        "title_phrase": 3,
+        "kiwi_phrase": 2,
+        "hashtag": 2,
+        "kiwi_token": 1,
+    }
     return (order.get(candidate.extractor, 0), candidate.entity_confidence or 0.0, len(candidate.candidate_text))
