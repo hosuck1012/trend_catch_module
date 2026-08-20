@@ -60,6 +60,15 @@ class PrefilterResult:
     raw_keyword_count: int
     quality_keyword_count: int
     context_candidate_count: int
+    created: int = 0
+    updated: int = 0
+    would_create: int = 0
+    would_update: int = 0
+    skipped: int = 0
+    next_cursor: int | None = None
+    has_more: bool = False
+    batches: int = 0
+    errors: int = 0
 
 
 def prefilter_travel_opportunities(
@@ -69,6 +78,8 @@ def prefilter_travel_opportunities(
     dry_run: bool,
     force: bool,
     limit: int,
+    after_id: int | None = None,
+    process_all: bool = False,
 ) -> PrefilterResult:
     settings = get_settings()
     resolved_start, resolved_end = repo.resolve_week_range(session, week_start)
@@ -77,91 +88,141 @@ def prefilter_travel_opportunities(
             "disabled", dry_run, resolved_start, resolved_end, 0, 0, 0, 0, 0, 0,
             0.0, [], {}, 0, 0, 0
         )
-    contexts: list[KeywordContext | TransientKeywordContext] = repo.get_keyword_contexts_for_week(
-        session,
-        week_start=resolved_start,
-        week_end=resolved_end,
-        limit=limit,
-    )
-    if dry_run and not contexts:
-        contexts = _build_transient_contexts(
-            session,
-            week_start=resolved_start,
-            week_end=resolved_end,
-            limit=limit,
-        )
     now = repo.utc_now()
     rows: list[dict[str, object]] = []
     previews: list[CandidatePreview] = []
     status_counts: Counter[str] = Counter()
     rejection_reasons: Counter[str] = Counter()
-    for context in contexts:
-        trend = repo.get_trend_by_keyword(
+    eligible_count, materialized_before, _remaining_before = repo.count_rule_materialization_coverage(
+        session,
+        week_start=resolved_start,
+        week_end=resolved_end,
+        candidate_week_start=resolved_start,
+    )
+    processed = 0
+    created = 0
+    updated = 0
+    would_create = 0
+    would_update = 0
+    batches = 0
+    cursor = after_id
+    next_cursor: int | None = None
+    has_more = False
+    while True:
+        contexts, page_next_cursor, page_has_more = repo.get_keyword_contexts_page(
             session,
-            keyword=context.normalized_keyword,
             week_start=resolved_start,
+            week_end=resolved_end,
+            candidate_week_start=resolved_start,
+            after_id=cursor,
+            limit=limit,
+            force=force,
         )
-        trend_links, mentions = repo.get_entities_for_context(
-            session,
-            context=context,
-            week_start=resolved_start,
-        )
-        entities = _entity_signals(context, trend_links, mentions)
-        trend_signal = TrendSignal(
-            weekly_mentions=trend.weekly_mentions if trend else 0,
-            final_score=trend.final_score if trend else None,
-            source_count=trend.source_count if trend else max(1, _source_count_from_mentions(mentions)),
-            document_count=1,
-        )
-        rule_result = evaluate_travel_rules(
-            keyword=context.keyword,
-            context=context.combined_context,
-            entities=entities,
-            trend=trend_signal,
-        )
-        status_counts[rule_result.prefilter_status] += 1
-        if rule_result.prefilter_status == "rejected":
-            for code in rule_result.reasoning_codes or ["NO_TRAVEL_SIGNAL"]:
-                rejection_reasons[code] += 1
-        rows.append(
-            {
-                "keyword": context.keyword,
-                "normalized_keyword": context.normalized_keyword,
-                "week_start": resolved_start,
-                "week_end": resolved_end,
-                "keyword_context_id": context.id,
-                "primary_entity": rule_result.primary_entity,
-                "primary_entity_type": rule_result.primary_entity_type,
-                "travel_category": rule_result.travel_category,
-                "entity_prior_score": rule_result.entity_prior_score,
-                "positive_context_score": rule_result.positive_context_score,
-                "negative_context_penalty": rule_result.negative_context_penalty,
-                "trend_evidence_score": rule_result.trend_evidence_score,
-                "source_diversity_score": rule_result.source_diversity_score,
-                "travel_pre_score": rule_result.travel_pre_score,
-                "prefilter_status": rule_result.prefilter_status,
-                "matched_positive_terms_json": repo.encode_json(rule_result.matched_positive_terms),
-                "matched_negative_terms_json": repo.encode_json(rule_result.matched_negative_terms),
-                "reasoning_codes_json": repo.encode_json(rule_result.reasoning_codes),
-                "created_at": now,
-                "updated_at": now,
-            }
-        )
-        previews.append(
-            CandidatePreview(
-                keyword=context.keyword,
-                normalized_keyword=context.normalized_keyword,
-                score=rule_result.travel_pre_score,
-                status=rule_result.prefilter_status,
-                category=rule_result.travel_category,
-                reasoning_codes=rule_result.reasoning_codes,
-                matched_positive_terms=rule_result.matched_positive_terms,
-                matched_negative_terms=rule_result.matched_negative_terms,
-                context=context.combined_context,
+        if dry_run and not contexts and eligible_count == 0 and after_id is None:
+            contexts = _build_transient_contexts(
+                session,
+                week_start=resolved_start,
+                week_end=resolved_end,
+                limit=limit,
             )
-        )
-    if not dry_run and rows and resolved_start and resolved_end:
-        repo.upsert_travel_candidates(session, week_start=resolved_start, rows=rows, force=force)
+        if not contexts:
+            next_cursor = None
+            has_more = False
+            break
+        batches += 1
+        existing_context_ids = repo.get_existing_candidate_context_ids(
+            session,
+            week_start=resolved_start,
+            context_ids=[context.id for context in contexts if context.id > 0],
+        ) if resolved_start else set()
+        would_update += len(existing_context_ids)
+        would_create += len(contexts) - len(existing_context_ids)
+        rows = []
+        for context in contexts:
+            trend = repo.get_trend_by_keyword(
+                session,
+                keyword=context.normalized_keyword,
+                week_start=resolved_start,
+            )
+            trend_links, mentions = repo.get_entities_for_context(
+                session,
+                context=context,
+                week_start=resolved_start,
+            )
+            entities = _entity_signals(context, trend_links, mentions)
+            trend_signal = TrendSignal(
+                weekly_mentions=trend.weekly_mentions if trend else 0,
+                final_score=trend.final_score if trend else None,
+                source_count=trend.source_count if trend else max(1, _source_count_from_mentions(mentions)),
+                document_count=1,
+            )
+            rule_result = evaluate_travel_rules(
+                keyword=context.keyword,
+                context=context.combined_context,
+                entities=entities,
+                trend=trend_signal,
+            )
+            status_counts[rule_result.prefilter_status] += 1
+            if rule_result.prefilter_status == "rejected":
+                for code in rule_result.reasoning_codes or ["NO_TRAVEL_SIGNAL"]:
+                    rejection_reasons[code] += 1
+            rows.append(
+                {
+                    "keyword": context.keyword,
+                    "normalized_keyword": context.normalized_keyword,
+                    "week_start": resolved_start,
+                    "week_end": resolved_end,
+                    "keyword_context_id": context.id,
+                    "primary_entity": rule_result.primary_entity,
+                    "primary_entity_type": rule_result.primary_entity_type,
+                    "travel_category": rule_result.travel_category,
+                    "entity_prior_score": rule_result.entity_prior_score,
+                    "positive_context_score": rule_result.positive_context_score,
+                    "negative_context_penalty": rule_result.negative_context_penalty,
+                    "trend_evidence_score": rule_result.trend_evidence_score,
+                    "source_diversity_score": rule_result.source_diversity_score,
+                    "travel_pre_score": rule_result.travel_pre_score,
+                    "prefilter_status": rule_result.prefilter_status,
+                    "matched_positive_terms_json": repo.encode_json(rule_result.matched_positive_terms),
+                    "matched_negative_terms_json": repo.encode_json(rule_result.matched_negative_terms),
+                    "reasoning_codes_json": repo.encode_json(rule_result.reasoning_codes),
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            if rule_result.prefilter_status in {"review", "strong"}:
+                previews.append(
+                    CandidatePreview(
+                        keyword=context.keyword,
+                        normalized_keyword=context.normalized_keyword,
+                        score=rule_result.travel_pre_score,
+                        status=rule_result.prefilter_status,
+                        category=rule_result.travel_category,
+                        reasoning_codes=rule_result.reasoning_codes,
+                        matched_positive_terms=rule_result.matched_positive_terms,
+                        matched_negative_terms=rule_result.matched_negative_terms,
+                        context=context.combined_context,
+                    )
+                )
+        processed += len(contexts)
+        if not dry_run and rows and resolved_start and resolved_end:
+            page_created, page_updated = repo.upsert_travel_candidates(
+                session,
+                week_start=resolved_start,
+                rows=rows,
+                force=force,
+            )
+            created += page_created
+            updated += page_updated
+        has_more = page_has_more
+        next_cursor = page_next_cursor
+        if not process_all or not page_has_more:
+            break
+        if page_next_cursor is None or page_next_cursor <= (cursor or 0):
+            raise RuntimeError("Rule pagination cursor did not advance")
+        if batches >= 100_000:
+            raise RuntimeError("Rule pagination exceeded safety limit")
+        cursor = page_next_cursor
     raw = repo.count_raw_keywords(session, week_start=resolved_start)
     _candidate_total, _accepted_rows, quality = repo.count_keyword_candidate_funnel(
         session,
@@ -171,7 +232,7 @@ def prefilter_travel_opportunities(
     estimated = status_counts["strong"]
     reduction = round((1 - estimated / raw) * 100, 2) if raw else 0.0
     top = sorted(
-        [item for item in previews if item.status in {"review", "strong"}],
+        previews,
         key=lambda item: (-item.score, item.normalized_keyword),
     )[:20]
     return PrefilterResult(
@@ -179,7 +240,7 @@ def prefilter_travel_opportunities(
         dry_run=dry_run,
         week_start=resolved_start,
         week_end=resolved_end,
-        processed=len(contexts),
+        processed=processed,
         rejected=status_counts["rejected"],
         weak=status_counts["weak"],
         review=status_counts["review"],
@@ -190,7 +251,15 @@ def prefilter_travel_opportunities(
         rejection_reason_counts=dict(rejection_reasons),
         raw_keyword_count=raw,
         quality_keyword_count=quality,
-        context_candidate_count=len(contexts),
+        context_candidate_count=processed,
+        created=created,
+        updated=updated,
+        would_create=would_create,
+        would_update=would_update,
+        skipped=materialized_before if not force else 0,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        batches=batches,
     )
 
 

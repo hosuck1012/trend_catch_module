@@ -30,6 +30,12 @@ class BuildContextsResult:
     contexts_would_create: int
     duplicate_contexts: int
     context_examples: list[ContextExample]
+    created: int = 0
+    skipped: int = 0
+    next_cursor: int | None = None
+    has_more: bool = False
+    batches: int = 0
+    errors: int = 0
 
 
 def build_keyword_contexts(
@@ -39,6 +45,8 @@ def build_keyword_contexts(
     limit: int,
     force: bool,
     dry_run: bool,
+    after_id: int | None = None,
+    process_all: bool = False,
 ) -> BuildContextsResult:
     settings = get_settings()
     resolved_start, resolved_end = repo.resolve_week_range(session, week_start)
@@ -48,81 +56,119 @@ def build_keyword_contexts(
         session,
         week_start=resolved_start,
         week_end=resolved_end,
-        limit=limit,
+        limit=None,
     )
-    rows = repo.get_keyword_occurrence_documents(
-        session,
-        normalized_keywords=keywords,
-        week_start=resolved_start,
-        week_end=resolved_end,
-        limit=limit,
-    )
-    now = repo.utc_now()
-    pending: list[dict[str, object]] = []
     examples: list[ContextExample] = []
+    keyword_values: set[str] = set()
+    document_ids: set[int] = set()
     contexts_found = 0
-    for occurrence, document in rows:
-        extracted = extract_keyword_contexts(
-            text=f"{document.title}\n{document.text}".strip(),
-            keyword=occurrence.keyword,
-            normalized_keyword=occurrence.normalized_keyword,
-            sentences_before=settings.context_sentences_before,
-            sentences_after=settings.context_sentences_after,
-            max_chars=settings.context_max_chars,
+    contexts_would_create = 0
+    duplicate_contexts = 0
+    created = 0
+    batches = 0
+    cursor = after_id
+    next_cursor: int | None = None
+    has_more = False
+    while True:
+        rows, page_next_cursor, page_has_more = repo.get_keyword_occurrence_documents_page(
+            session,
+            normalized_keywords=keywords,
+            week_start=resolved_start,
+            week_end=resolved_end,
+            after_id=cursor,
+            limit=limit,
         )
-        contexts_found += len(extracted)
-        for context in extracted:
-            payload = {
-                "document_id": document.id,
-                "keyword": context.keyword,
-                "normalized_keyword": context.normalized_keyword,
-                "previous_sentence": context.previous_sentence,
-                "matched_sentence": context.matched_sentence,
-                "next_sentence": context.next_sentence,
-                "combined_context": context.combined_context,
-                "occurrence_index": context.occurrence_index,
-                "source": document.source,
-                "published_at": document.published_at,
-                "context_hash": context.context_hash,
-                "created_at": now,
-                "updated_at": now,
-            }
-            pending.append(payload)
-            if len(examples) < 5:
-                examples.append(
-                    ContextExample(
-                        document_id=document.id,
-                        keyword=context.keyword,
-                        previous_sentence=context.previous_sentence,
-                        matched_sentence=context.matched_sentence,
-                        next_sentence=context.next_sentence,
-                        combined_context=context.combined_context,
+        if not rows:
+            has_more = False
+            next_cursor = None
+            break
+        batches += 1
+        now = repo.utc_now()
+        pending: list[dict[str, object]] = []
+        for occurrence, document in rows:
+            keyword_values.add(occurrence.normalized_keyword)
+            document_ids.add(document.id)
+            extracted = extract_keyword_contexts(
+                text=f"{document.title}\n{document.text}".strip(),
+                keyword=occurrence.keyword,
+                normalized_keyword=occurrence.normalized_keyword,
+                sentences_before=settings.context_sentences_before,
+                sentences_after=settings.context_sentences_after,
+                max_chars=settings.context_max_chars,
+            )
+            contexts_found += len(extracted)
+            for context in extracted:
+                payload = {
+                    "document_id": document.id,
+                    "keyword": context.keyword,
+                    "normalized_keyword": context.normalized_keyword,
+                    "previous_sentence": context.previous_sentence,
+                    "matched_sentence": context.matched_sentence,
+                    "next_sentence": context.next_sentence,
+                    "combined_context": context.combined_context,
+                    "occurrence_index": context.occurrence_index,
+                    "source": document.source,
+                    "published_at": document.published_at,
+                    "context_hash": context.context_hash,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                pending.append(payload)
+                if len(examples) < 5:
+                    examples.append(
+                        ContextExample(
+                            document_id=document.id,
+                            keyword=context.keyword,
+                            previous_sentence=context.previous_sentence,
+                            matched_sentence=context.matched_sentence,
+                            next_sentence=context.next_sentence,
+                            combined_context=context.combined_context,
+                        )
                     )
-                )
-    keys = [
-        (int(row["document_id"]), str(row["normalized_keyword"]), str(row["context_hash"]))
-        for row in pending
-    ]
-    existing = repo.existing_context_keys(session, triples=keys) if not force else set()
-    to_create = [
-        row
-        for row in pending
-        if (int(row["document_id"]), str(row["normalized_keyword"]), str(row["context_hash"]))
-        not in existing
-    ]
-    if not dry_run and to_create:
-        repo.add_keyword_contexts(session, to_create)
+        keys = [
+            (int(row["document_id"]), str(row["normalized_keyword"]), str(row["context_hash"]))
+            for row in pending
+        ]
+        # Context identity is content-addressed. Even force runs must not insert the
+        # same key again because doing so would violate the unique constraint and
+        # could cascade into already materialized downstream evidence.
+        existing = repo.existing_context_keys(session, triples=keys)
+        to_create = [
+            row
+            for row in pending
+            if (int(row["document_id"]), str(row["normalized_keyword"]), str(row["context_hash"]))
+            not in existing
+        ]
+        contexts_would_create += len(to_create)
+        duplicate_contexts += len(pending) - len(to_create)
+        if not dry_run and to_create:
+            repo.add_keyword_contexts(session, to_create)
+            created += len(to_create)
+        has_more = page_has_more
+        next_cursor = page_next_cursor
+        if not process_all or not page_has_more:
+            break
+        if page_next_cursor is None or page_next_cursor <= (cursor or 0):
+            raise RuntimeError("Context pagination cursor did not advance")
+        if batches >= 100_000:
+            raise RuntimeError("Context pagination exceeded safety limit")
+        cursor = page_next_cursor
     return BuildContextsResult(
         status="dry_run" if dry_run else "ok",
         dry_run=dry_run,
         week_start=resolved_start,
         week_end=resolved_end,
-        keywords_processed=len(keywords),
-        documents_processed=len({document.id for _occurrence, document in rows}),
+        keywords_processed=len(keyword_values),
+        documents_processed=len(document_ids),
         contexts_found=contexts_found,
-        contexts_would_create=len(to_create),
-        duplicate_contexts=len(pending) - len(to_create),
+        contexts_would_create=contexts_would_create,
+        duplicate_contexts=duplicate_contexts,
         context_examples=examples,
+        created=created,
+        skipped=duplicate_contexts,
+        next_cursor=next_cursor,
+        has_more=has_more,
+        batches=batches,
     )
 
 

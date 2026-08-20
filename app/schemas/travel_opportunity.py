@@ -23,6 +23,12 @@ class BuildContextsResponse(BaseModel):
     contexts_would_create: int
     duplicate_contexts: int
     context_examples: list[KeywordContextExampleResponse] = Field(default_factory=list)
+    created: int = 0
+    skipped: int = 0
+    next_cursor: int | None = None
+    has_more: bool = False
+    batches: int = 0
+    errors: int = 0
 
 
 class TravelCandidatePreviewResponse(BaseModel):
@@ -54,6 +60,15 @@ class PrefilterResponse(BaseModel):
     raw_keyword_count: int
     quality_keyword_count: int
     context_candidate_count: int
+    created: int = 0
+    updated: int = 0
+    would_create: int = 0
+    would_update: int = 0
+    skipped: int = 0
+    next_cursor: int | None = None
+    has_more: bool = False
+    batches: int = 0
+    errors: int = 0
 
 
 class SemanticCandidatePreviewResponse(BaseModel):

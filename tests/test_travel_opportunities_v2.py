@@ -13,6 +13,7 @@ from app.models.source_document import SourceDocument
 from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
 from app.models.weekly_trend import WeeklyTrend
 from app.repositories.travel_opportunity_repository import summarize_v2
+from app.repositories import travel_opportunity_repository as travel_repo
 from app.services.keyword_context_service import build_keyword_contexts
 from app.services.travel_prefilter_service import prefilter_travel_opportunities
 
@@ -257,6 +258,243 @@ def test_prefilter_dry_run_db_unchanged_and_gemini_not_called(monkeypatch, clien
     assert "reduction_rate" in payload
     assert payload["quality_keyword_count"] == 2
     assert (db_session.scalar(select(func.count(TravelOpportunityCandidate.id))) or 0) == before
+
+
+def test_build_contexts_process_all_traverses_multiple_pages(client, db_session) -> None:
+    _seed_travel(db_session)
+
+    response = client.post(
+        "/api/travel-opportunities/build-contexts"
+        "?dry_run=false&force=false&limit=1&process_all=true"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["batches"] == 2
+    assert payload["has_more"] is False
+    assert payload["next_cursor"] is None
+    assert payload["created"] == payload["contexts_would_create"]
+    assert payload["created"] >= 2
+    context_documents = set(db_session.scalars(select(KeywordContext.document_id)).all())
+    assert len(context_documents) == 2
+
+
+def test_build_contexts_manual_cursor_keeps_stable_dataset(client, db_session) -> None:
+    _seed_travel(db_session)
+
+    first = client.post(
+        f"/api/travel-opportunities/build-contexts?week_start={WEEK_START.isoformat()}"
+        "&dry_run=false&force=false&limit=1"
+    )
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["has_more"] is True
+    assert first_payload["next_cursor"] is not None
+
+    second = client.post(
+        f"/api/travel-opportunities/build-contexts?week_start={WEEK_START.isoformat()}"
+        f"&dry_run=false&force=false&limit=1&after_id={first_payload['next_cursor']}"
+    )
+    assert second.status_code == 200
+    assert second.json()["has_more"] is False
+    context_documents = set(db_session.scalars(select(KeywordContext.document_id)).all())
+    assert len(context_documents) == 2
+
+
+def test_build_contexts_paginated_dry_run_and_empty_page_do_not_write(client, db_session) -> None:
+    _seed_travel(db_session)
+    before = db_session.scalar(select(func.count(KeywordContext.id))) or 0
+
+    dry_run = client.post(
+        f"/api/travel-opportunities/build-contexts?week_start={WEEK_START.isoformat()}"
+        "&dry_run=true&force=false&limit=1&process_all=true"
+    )
+    empty = client.post(
+        f"/api/travel-opportunities/build-contexts?week_start={WEEK_START.isoformat()}"
+        "&dry_run=true&force=false&limit=1&after_id=999999"
+    )
+
+    assert dry_run.status_code == 200
+    assert dry_run.json()["batches"] == 2
+    assert empty.status_code == 200
+    assert empty.json()["batches"] == 0
+    assert empty.json()["has_more"] is False
+    assert (db_session.scalar(select(func.count(KeywordContext.id))) or 0) == before
+
+
+def test_rule_cursor_pages_are_ordered_and_do_not_overlap(db_session) -> None:
+    _seed_travel(db_session)
+    build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=1,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+
+    first, cursor, has_more = travel_repo.get_keyword_contexts_page(
+        db_session,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        candidate_week_start=WEEK_START,
+        after_id=None,
+        limit=1,
+        force=False,
+    )
+    second, _next_cursor, _has_more = travel_repo.get_keyword_contexts_page(
+        db_session,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        candidate_week_start=WEEK_START,
+        after_id=cursor,
+        limit=1,
+        force=False,
+    )
+
+    assert has_more is True
+    assert cursor == first[-1].id
+    assert second[0].id > first[-1].id
+
+
+def test_prefilter_process_all_is_complete_and_restart_safe(client, db_session) -> None:
+    _seed_travel(db_session)
+    build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=2,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+    context_total = db_session.scalar(select(func.count(KeywordContext.id))) or 0
+
+    first = client.post(
+        f"/api/travel-opportunities/prefilter?week_start={WEEK_START.isoformat()}"
+        "&dry_run=false&force=false&limit=3&process_all=true"
+    )
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["processed"] == context_total
+    assert first_payload["created"] == context_total
+    assert first_payload["updated"] == 0
+    assert first_payload["has_more"] is False
+    assert first_payload["batches"] == (context_total + 2) // 3
+
+    evaluated, materialized, remaining = travel_repo.count_rule_materialization_coverage(
+        db_session,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        candidate_week_start=WEEK_START,
+    )
+    assert (evaluated, materialized, remaining) == (context_total, context_total, 0)
+    row_count = db_session.scalar(select(func.count(TravelOpportunityCandidate.id))) or 0
+    distinct_contexts = db_session.scalar(
+        select(func.count(func.distinct(TravelOpportunityCandidate.keyword_context_id)))
+    ) or 0
+    timestamps = dict(
+        db_session.execute(
+            select(TravelOpportunityCandidate.id, TravelOpportunityCandidate.updated_at)
+        ).all()
+    )
+    assert row_count == distinct_contexts == context_total
+
+    second = client.post(
+        f"/api/travel-opportunities/prefilter?week_start={WEEK_START.isoformat()}"
+        "&dry_run=false&force=false&limit=2&process_all=true"
+    )
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["processed"] == 0
+    assert second_payload["created"] == 0
+    assert second_payload["updated"] == 0
+    assert second_payload["skipped"] == context_total
+    assert second_payload["batches"] == 0
+    assert (db_session.scalar(select(func.count(TravelOpportunityCandidate.id))) or 0) == row_count
+    assert dict(
+        db_session.execute(
+            select(TravelOpportunityCandidate.id, TravelOpportunityCandidate.updated_at)
+        ).all()
+    ) == timestamps
+
+
+def test_prefilter_force_preview_counts_mixed_rows_and_force_false_preserves_semantic(
+    db_session,
+) -> None:
+    _seed_travel(db_session)
+    build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=2,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+    context_total = db_session.scalar(select(func.count(KeywordContext.id))) or 0
+    first = prefilter_travel_opportunities(
+        db_session,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=1,
+    )
+    assert first.created == 1
+    existing = db_session.scalar(select(TravelOpportunityCandidate))
+    assert existing is not None
+    existing.semantic_status = "semantic_review"
+    existing.semantic_travel_score = 77.0
+    existing.ranking_status = "review"
+    db_session.commit()
+
+    preview = prefilter_travel_opportunities(
+        db_session,
+        week_start=WEEK_START,
+        dry_run=True,
+        force=True,
+        limit=10,
+        process_all=True,
+    )
+    assert preview.processed == context_total
+    assert preview.would_update == 1
+    assert preview.would_create == context_total - 1
+
+    resumed = prefilter_travel_opportunities(
+        db_session,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=2,
+        process_all=True,
+    )
+    assert resumed.created == context_total - 1
+    db_session.refresh(existing)
+    assert existing.semantic_status == "semantic_review"
+    assert existing.semantic_travel_score == 77.0
+    assert existing.ranking_status == "review"
+
+
+def test_prefilter_empty_cursor_page_is_safe(client, db_session) -> None:
+    _seed_travel(db_session)
+    build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+
+    response = client.post(
+        f"/api/travel-opportunities/prefilter?week_start={WEEK_START.isoformat()}"
+        "&dry_run=true&force=false&limit=2&after_id=999999"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["processed"] == 0
+    assert payload["batches"] == 0
+    assert payload["has_more"] is False
+    assert payload["next_cursor"] is None
 
 
 def test_summary_calculation_for_dashboard(client, db_session) -> None:

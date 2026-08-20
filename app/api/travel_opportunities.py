@@ -136,6 +136,8 @@ def get_travel_semantic_scorer() -> SemanticScorer:
 def build_contexts(
     week_start: date | None = Query(default=None),
     limit: int = Query(default=500, ge=1, le=5000),
+    after_id: int | None = Query(default=None, ge=0),
+    process_all: bool = Query(default=False),
     force: bool = Query(default=False),
     dry_run: bool = Query(default=True),
     session: Session = Depends(get_db),
@@ -147,6 +149,8 @@ def build_contexts(
             limit=limit,
             force=force,
             dry_run=dry_run,
+            after_id=after_id,
+            process_all=process_all,
         )
     )
 
@@ -157,6 +161,8 @@ def prefilter(
     dry_run: bool = Query(default=True),
     force: bool = Query(default=False),
     limit: int = Query(default=500, ge=1, le=5000),
+    after_id: int | None = Query(default=None, ge=0),
+    process_all: bool = Query(default=False),
     session: Session = Depends(get_db),
 ) -> dict[str, object]:
     return serialize_prefilter_result(
@@ -166,6 +172,8 @@ def prefilter(
             dry_run=dry_run,
             force=force,
             limit=limit,
+            after_id=after_id,
+            process_all=process_all,
         )
     )
 

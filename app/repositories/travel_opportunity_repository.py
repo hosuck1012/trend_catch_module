@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 
 from sqlalchemy import and_, delete, distinct, func, or_, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
@@ -50,11 +51,11 @@ def get_quality_keywords(
     *,
     week_start: date | None,
     week_end: date | None,
-    limit: int,
+    limit: int | None,
 ) -> list[str]:
     settings = get_settings()
     if week_start:
-        rows = session.scalars(
+        statement = (
             select(WeeklyTrend.keyword)
             .where(
                 WeeklyTrend.week_start == week_start,
@@ -66,8 +67,10 @@ def get_quality_keywords(
                 WeeklyTrend.source_count.desc(),
                 WeeklyTrend.keyword.asc(),
             )
-            .limit(limit)
-        ).all()
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        rows = session.scalars(statement).all()
         if rows:
             return list(rows)
     filters = [KeywordCandidate.accepted.is_(True)]
@@ -78,14 +81,16 @@ def get_quality_keywords(
                 func.date(SourceDocument.published_at) <= week_end.isoformat(),
             ]
         )
-    rows = session.scalars(
+    statement = (
         select(KeywordCandidate.normalized_candidate)
         .join(SourceDocument, SourceDocument.id == KeywordCandidate.document_id)
         .where(*filters)
         .distinct()
         .order_by(KeywordCandidate.quality_score.desc(), KeywordCandidate.normalized_candidate.asc())
-        .limit(limit)
-    ).all()
+    )
+    if limit is not None:
+        statement = statement.limit(limit)
+    rows = session.scalars(statement).all()
     if rows:
         return list(rows)
     occurrence_filters = []
@@ -96,15 +101,15 @@ def get_quality_keywords(
                 func.date(KeywordOccurrence.occurred_at) <= week_end.isoformat(),
             ]
         )
-    return list(
-        session.scalars(
-            select(KeywordOccurrence.normalized_keyword)
-            .where(*occurrence_filters)
-            .distinct()
-            .order_by(KeywordOccurrence.normalized_keyword.asc())
-            .limit(limit)
-        ).all()
+    statement = (
+        select(KeywordOccurrence.normalized_keyword)
+        .where(*occurrence_filters)
+        .distinct()
+        .order_by(KeywordOccurrence.normalized_keyword.asc())
     )
+    if limit is not None:
+        statement = statement.limit(limit)
+    return list(session.scalars(statement).all())
 
 
 def get_keyword_occurrence_documents(
@@ -134,6 +139,42 @@ def get_keyword_occurrence_documents(
             .limit(limit)
         ).all()
     )
+
+
+def get_keyword_occurrence_documents_page(
+    session: Session,
+    *,
+    normalized_keywords: list[str],
+    week_start: date | None,
+    week_end: date | None,
+    after_id: int | None,
+    limit: int,
+) -> tuple[list[tuple[KeywordOccurrence, SourceDocument]], int | None, bool]:
+    if not normalized_keywords:
+        return [], None, False
+    conditions = [KeywordOccurrence.normalized_keyword.in_(normalized_keywords)]
+    if week_start and week_end:
+        conditions.extend(
+            [
+                func.date(KeywordOccurrence.occurred_at) >= week_start.isoformat(),
+                func.date(KeywordOccurrence.occurred_at) <= week_end.isoformat(),
+            ]
+        )
+    if after_id is not None:
+        conditions.append(KeywordOccurrence.id > after_id)
+    rows = list(
+        session.execute(
+            select(KeywordOccurrence, SourceDocument)
+            .join(SourceDocument, SourceDocument.id == KeywordOccurrence.document_id)
+            .where(*conditions)
+            .order_by(KeywordOccurrence.id.asc())
+            .limit(limit + 1)
+        ).all()
+    )
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    next_cursor = page[-1][0].id if has_more and page else None
+    return page, next_cursor, has_more
 
 
 def existing_context_keys(
@@ -194,6 +235,93 @@ def get_keyword_contexts_for_week(
     )
 
 
+def get_keyword_contexts_page(
+    session: Session,
+    *,
+    week_start: date | None,
+    week_end: date | None,
+    candidate_week_start: date | None,
+    after_id: int | None,
+    limit: int,
+    force: bool,
+) -> tuple[list[KeywordContext], int | None, bool]:
+    conditions = []
+    if week_start and week_end:
+        conditions.extend(
+            [
+                func.date(KeywordContext.published_at) >= week_start.isoformat(),
+                func.date(KeywordContext.published_at) <= week_end.isoformat(),
+            ]
+        )
+    if after_id is not None:
+        conditions.append(KeywordContext.id > after_id)
+    if not force and candidate_week_start is not None:
+        materialized = select(TravelOpportunityCandidate.id).where(
+            TravelOpportunityCandidate.week_start == candidate_week_start,
+            TravelOpportunityCandidate.keyword_context_id == KeywordContext.id,
+        )
+        conditions.append(~materialized.exists())
+    rows = list(
+        session.scalars(
+            select(KeywordContext)
+            .where(*conditions)
+            .order_by(KeywordContext.id.asc())
+            .limit(limit + 1)
+        ).all()
+    )
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    next_cursor = page[-1].id if has_more and page else None
+    return page, next_cursor, has_more
+
+
+def count_rule_materialization_coverage(
+    session: Session,
+    *,
+    week_start: date | None,
+    week_end: date | None,
+    candidate_week_start: date | None,
+) -> tuple[int, int, int]:
+    conditions = []
+    if week_start and week_end:
+        conditions.extend(
+            [
+                func.date(KeywordContext.published_at) >= week_start.isoformat(),
+                func.date(KeywordContext.published_at) <= week_end.isoformat(),
+            ]
+        )
+    eligible = session.scalar(select(func.count(KeywordContext.id)).where(*conditions)) or 0
+    if candidate_week_start is None:
+        return eligible, 0, eligible
+    materialized = session.scalar(
+        select(func.count(distinct(TravelOpportunityCandidate.keyword_context_id)))
+        .join(KeywordContext, KeywordContext.id == TravelOpportunityCandidate.keyword_context_id)
+        .where(
+            TravelOpportunityCandidate.week_start == candidate_week_start,
+            *conditions,
+        )
+    ) or 0
+    return eligible, materialized, max(eligible - materialized, 0)
+
+
+def get_existing_candidate_context_ids(
+    session: Session,
+    *,
+    week_start: date,
+    context_ids: list[int],
+) -> set[int]:
+    if not context_ids:
+        return set()
+    return set(
+        session.scalars(
+            select(TravelOpportunityCandidate.keyword_context_id).where(
+                TravelOpportunityCandidate.week_start == week_start,
+                TravelOpportunityCandidate.keyword_context_id.in_(context_ids),
+            )
+        ).all()
+    )
+
+
 def get_trend_by_keyword(session: Session, *, keyword: str, week_start: date | None) -> WeeklyTrend | None:
     statement = select(WeeklyTrend).where(WeeklyTrend.keyword == keyword)
     if week_start:
@@ -235,9 +363,20 @@ def upsert_travel_candidates(
     week_start: date,
     rows: list[dict[str, object]],
     force: bool,
-) -> None:
+) -> tuple[int, int]:
+    context_ids = [int(row["keyword_context_id"]) for row in rows]
+    existing = {
+        (row.normalized_keyword, row.week_start, row.keyword_context_id): row
+        for row in session.scalars(
+            select(TravelOpportunityCandidate).where(
+                TravelOpportunityCandidate.week_start == week_start,
+                TravelOpportunityCandidate.keyword_context_id.in_(context_ids),
+            )
+        ).all()
+    } if context_ids else {}
+    created = 0
+    updated = 0
     if force:
-        context_ids = [int(row["keyword_context_id"]) for row in rows]
         if context_ids:
             session.execute(
                 delete(TravelOpportunityCandidate).where(
@@ -245,14 +384,18 @@ def upsert_travel_candidates(
                     TravelOpportunityCandidate.keyword_context_id.in_(context_ids),
                 )
             )
-    existing = {
-        (row.normalized_keyword, row.week_start, row.keyword_context_id): row
-        for row in session.scalars(
-            select(TravelOpportunityCandidate).where(
-                TravelOpportunityCandidate.week_start == week_start
+    elif session.bind is not None and session.bind.dialect.name == "sqlite":
+        for values in rows:
+            result = session.execute(
+                sqlite_insert(TravelOpportunityCandidate)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    index_elements=["normalized_keyword", "week_start", "keyword_context_id"]
+                )
             )
-        ).all()
-    }
+            created += max(result.rowcount or 0, 0)
+        session.commit()
+        return created, 0
     for values in rows:
         key = (
             values["normalized_keyword"],
@@ -260,13 +403,23 @@ def upsert_travel_candidates(
             values["keyword_context_id"],
         )
         existing_row = existing.get(key)
+        if force:
+            session.add(TravelOpportunityCandidate(**values))
+            if existing_row is None:
+                created += 1
+            else:
+                updated += 1
+            continue
         if existing_row is None:
             session.add(TravelOpportunityCandidate(**values))
+            created += 1
             continue
+        updated += 1
         for name, value in values.items():
             if name not in {"keyword_context_id", "week_start", "normalized_keyword"}:
                 setattr(existing_row, name, value)
     session.commit()
+    return created, updated
 
 
 def get_candidates(
