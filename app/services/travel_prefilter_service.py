@@ -1,18 +1,27 @@
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
+import hashlib
 import json
 
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.context_v2.context_extractor import extract_keyword_contexts
-from app.context_v2.travel_rules import EntitySignal, TrendSignal, evaluate_travel_rules
+from app.context_v2.travel_rules import (
+    EntitySignal,
+    TrendSignal,
+    evaluate_travel_rules,
+    load_terms,
+)
 from app.models.entity_mention import EntityMention
 from app.models.keyword_context import KeywordContext
 from app.models.trend_entity_link import TrendEntityLink
 from app.repositories import travel_opportunity_repository as repo
 from app.services.keyword_normalization_service import normalize_keyword
+
+
+TRAVEL_PREFILTER_VERSION = "v2-rule-2"
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,12 @@ class PrefilterResult:
     has_more: bool = False
     batches: int = 0
     errors: int = 0
+    cache_hits: int = 0
+    rule_version: str = TRAVEL_PREFILTER_VERSION
+    category_counts: dict[str, int] = field(default_factory=dict)
+    reasoning_code_counts: dict[str, int] = field(default_factory=dict)
+    primary_entity_count: int = 0
+    other_percentage: float = 0.0
 
 
 def prefilter_travel_opportunities(
@@ -89,10 +104,15 @@ def prefilter_travel_opportunities(
             0.0, [], {}, 0, 0, 0
         )
     now = repo.utc_now()
+    positive_terms = load_terms("travel_positive_terms.json")
+    negative_terms = load_terms("travel_negative_terms.json")
     rows: list[dict[str, object]] = []
     previews: list[CandidatePreview] = []
     status_counts: Counter[str] = Counter()
     rejection_reasons: Counter[str] = Counter()
+    category_counts: Counter[str] = Counter()
+    reasoning_code_counts: Counter[str] = Counter()
+    primary_entity_count = 0
     eligible_count, materialized_before, _remaining_before = repo.count_rule_materialization_coverage(
         session,
         week_start=resolved_start,
@@ -105,6 +125,7 @@ def prefilter_travel_opportunities(
     would_create = 0
     would_update = 0
     batches = 0
+    cache_hits = 0
     cursor = after_id
     next_cursor: int | None = None
     has_more = False
@@ -130,14 +151,13 @@ def prefilter_travel_opportunities(
             has_more = False
             break
         batches += 1
-        existing_context_ids = repo.get_existing_candidate_context_ids(
+        existing_by_context = repo.get_existing_candidates_by_context(
             session,
             week_start=resolved_start,
             context_ids=[context.id for context in contexts if context.id > 0],
-        ) if resolved_start else set()
-        would_update += len(existing_context_ids)
-        would_create += len(contexts) - len(existing_context_ids)
+        ) if resolved_start else {}
         rows = []
+        evaluated_in_page = 0
         for context in contexts:
             trend = repo.get_trend_by_keyword(
                 session,
@@ -156,13 +176,46 @@ def prefilter_travel_opportunities(
                 source_count=trend.source_count if trend else max(1, _source_count_from_mentions(mentions)),
                 document_count=1,
             )
+            input_hash = rule_input_hash(
+                context=context,
+                entities=entities,
+                trend=trend_signal,
+                positive_terms=positive_terms,
+                negative_terms=negative_terms,
+            )
+            existing = existing_by_context.get(context.id)
+            if (
+                not force
+                and existing is not None
+                and existing.rule_input_hash == input_hash
+                and existing.rule_version == TRAVEL_PREFILTER_VERSION
+            ):
+                cache_hits += 1
+                status_counts[existing.prefilter_status] += 1
+                category_counts[existing.travel_category] += 1
+                primary_entity_count += int(existing.primary_entity is not None)
+                reasoning_code_counts.update(_json_list(existing.reasoning_codes_json))
+                if existing.prefilter_status == "rejected":
+                    for code in _json_list(existing.reasoning_codes_json) or ["NO_TRAVEL_SIGNAL"]:
+                        rejection_reasons[code] += 1
+                continue
+            evaluated_in_page += 1
+            if existing is None:
+                would_create += 1
+            else:
+                would_update += 1
             rule_result = evaluate_travel_rules(
                 keyword=context.keyword,
                 context=context.combined_context,
                 entities=entities,
                 trend=trend_signal,
+                positive_terms=positive_terms,
+                negative_terms=negative_terms,
             )
             status_counts[rule_result.prefilter_status] += 1
+            category_counts[rule_result.travel_category] += 1
+            primary_entity_count += int(rule_result.primary_entity is not None)
+            reasoning_code_counts.update(rule_result.reasoning_codes)
             if rule_result.prefilter_status == "rejected":
                 for code in rule_result.reasoning_codes or ["NO_TRAVEL_SIGNAL"]:
                     rejection_reasons[code] += 1
@@ -186,6 +239,9 @@ def prefilter_travel_opportunities(
                     "matched_positive_terms_json": repo.encode_json(rule_result.matched_positive_terms),
                     "matched_negative_terms_json": repo.encode_json(rule_result.matched_negative_terms),
                     "reasoning_codes_json": repo.encode_json(rule_result.reasoning_codes),
+                    "rule_input_hash": input_hash,
+                    "rule_version": TRAVEL_PREFILTER_VERSION,
+                    "rule_calculated_at": now,
                     "created_at": now,
                     "updated_at": now,
                 }
@@ -204,7 +260,7 @@ def prefilter_travel_opportunities(
                         context=context.combined_context,
                     )
                 )
-        processed += len(contexts)
+        processed += evaluated_in_page
         if not dry_run and rows and resolved_start and resolved_end:
             page_created, page_updated = repo.upsert_travel_candidates(
                 session,
@@ -256,10 +312,18 @@ def prefilter_travel_opportunities(
         updated=updated,
         would_create=would_create,
         would_update=would_update,
-        skipped=materialized_before if not force else 0,
+        skipped=cache_hits,
         next_cursor=next_cursor,
         has_more=has_more,
         batches=batches,
+        cache_hits=cache_hits,
+        rule_version=TRAVEL_PREFILTER_VERSION,
+        category_counts=dict(category_counts),
+        reasoning_code_counts=dict(reasoning_code_counts),
+        primary_entity_count=primary_entity_count,
+        other_percentage=round(category_counts["OTHER"] / sum(category_counts.values()) * 100, 2)
+        if category_counts
+        else 0.0,
     )
 
 
@@ -441,6 +505,53 @@ def _entity_signals(
             )
             seen.add(key)
     return signals
+
+
+def rule_input_hash(
+    *,
+    context: KeywordContext | TransientKeywordContext,
+    entities: list[EntitySignal],
+    trend: TrendSignal,
+    positive_terms: list[str],
+    negative_terms: list[str],
+) -> str:
+    settings = get_settings()
+    payload = {
+        "version": TRAVEL_PREFILTER_VERSION,
+        "keyword": context.keyword,
+        "normalized_keyword": context.normalized_keyword,
+        "context": context.combined_context,
+        "context_hash": getattr(context, "context_hash", None),
+        "entities": sorted(
+            (
+                entity.normalized_text,
+                entity.entity_type,
+                round(entity.relation_score, 4),
+                entity.is_primary,
+            )
+            for entity in entities
+        ),
+        "trend": {
+            "weekly_mentions": trend.weekly_mentions,
+            "final_score": trend.final_score,
+            "source_count": trend.source_count,
+            "document_count": trend.document_count,
+        },
+        "thresholds": {
+            "minimum": settings.travel_prefilter_min_score,
+            "review": settings.travel_prefilter_review_score,
+            "strong": settings.travel_prefilter_strong_score,
+        },
+        "positive_terms": positive_terms,
+        "negative_terms": negative_terms,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _serialize_context(context) -> dict[str, object]:

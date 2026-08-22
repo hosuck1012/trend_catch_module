@@ -158,6 +158,9 @@ def _ensure_sqlite_travel_opportunity_columns() -> None:
     existing = {column["name"] for column in inspector.get_columns(table_name)}
     required = {
         "semantic_travel_score": "REAL",
+        "rule_input_hash": "VARCHAR(64)",
+        "rule_version": "VARCHAR(50)",
+        "rule_calculated_at": "DATETIME",
         "semantic_status": "VARCHAR(30)",
         "embedding_model": "VARCHAR(255)",
         "semantic_positive_score": "REAL",

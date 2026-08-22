@@ -2,7 +2,6 @@ from datetime import date, datetime, timedelta, timezone
 import json
 
 from sqlalchemy import and_, delete, distinct, func, or_, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
@@ -207,7 +206,32 @@ def existing_context_keys(
 
 def add_keyword_contexts(session: Session, rows: list[dict[str, object]]) -> None:
     session.add_all(KeywordContext(**row) for row in rows)
-    session.commit()
+    session.flush()
+
+
+def get_keyword_contexts_in_range(
+    session: Session,
+    *,
+    week_start: date,
+    week_end: date,
+) -> list[KeywordContext]:
+    return list(
+        session.scalars(
+            select(KeywordContext).where(
+                func.date(KeywordContext.published_at) >= week_start.isoformat(),
+                func.date(KeywordContext.published_at) <= week_end.isoformat(),
+            )
+        ).all()
+    )
+
+
+def delete_keyword_contexts(session: Session, *, context_ids: list[int]) -> int:
+    if not context_ids:
+        return 0
+    result = session.execute(
+        delete(KeywordContext).where(KeywordContext.id.in_(context_ids))
+    )
+    return max(result.rowcount or 0, 0)
 
 
 def get_keyword_contexts_for_week(
@@ -255,12 +279,6 @@ def get_keyword_contexts_page(
         )
     if after_id is not None:
         conditions.append(KeywordContext.id > after_id)
-    if not force and candidate_week_start is not None:
-        materialized = select(TravelOpportunityCandidate.id).where(
-            TravelOpportunityCandidate.week_start == candidate_week_start,
-            TravelOpportunityCandidate.keyword_context_id == KeywordContext.id,
-        )
-        conditions.append(~materialized.exists())
     rows = list(
         session.scalars(
             select(KeywordContext)
@@ -322,6 +340,23 @@ def get_existing_candidate_context_ids(
     )
 
 
+def get_existing_candidates_by_context(
+    session: Session,
+    *,
+    week_start: date,
+    context_ids: list[int],
+) -> dict[int, TravelOpportunityCandidate]:
+    if not context_ids:
+        return {}
+    rows = session.scalars(
+        select(TravelOpportunityCandidate).where(
+            TravelOpportunityCandidate.week_start == week_start,
+            TravelOpportunityCandidate.keyword_context_id.in_(context_ids),
+        )
+    ).all()
+    return {row.keyword_context_id: row for row in rows}
+
+
 def get_trend_by_keyword(session: Session, *, keyword: str, week_start: date | None) -> WeeklyTrend | None:
     statement = select(WeeklyTrend).where(WeeklyTrend.keyword == keyword)
     if week_start:
@@ -376,26 +411,6 @@ def upsert_travel_candidates(
     } if context_ids else {}
     created = 0
     updated = 0
-    if force:
-        if context_ids:
-            session.execute(
-                delete(TravelOpportunityCandidate).where(
-                    TravelOpportunityCandidate.week_start == week_start,
-                    TravelOpportunityCandidate.keyword_context_id.in_(context_ids),
-                )
-            )
-    elif session.bind is not None and session.bind.dialect.name == "sqlite":
-        for values in rows:
-            result = session.execute(
-                sqlite_insert(TravelOpportunityCandidate)
-                .values(**values)
-                .on_conflict_do_nothing(
-                    index_elements=["normalized_keyword", "week_start", "keyword_context_id"]
-                )
-            )
-            created += max(result.rowcount or 0, 0)
-        session.commit()
-        return created, 0
     for values in rows:
         key = (
             values["normalized_keyword"],
@@ -403,20 +418,24 @@ def upsert_travel_candidates(
             values["keyword_context_id"],
         )
         existing_row = existing.get(key)
-        if force:
-            session.add(TravelOpportunityCandidate(**values))
-            if existing_row is None:
-                created += 1
-            else:
-                updated += 1
-            continue
         if existing_row is None:
             session.add(TravelOpportunityCandidate(**values))
             created += 1
             continue
         updated += 1
+        if existing_row.semantic_status is not None:
+            existing_row.semantic_status = "stale"
+        if existing_row.ranking_status is not None:
+            existing_row.ranking_status = "stale"
+        if existing_row.gemini_eligible:
+            existing_row.gemini_eligible = False
         for name, value in values.items():
-            if name not in {"keyword_context_id", "week_start", "normalized_keyword"}:
+            if name not in {
+                "keyword_context_id",
+                "week_start",
+                "normalized_keyword",
+                "created_at",
+            }:
                 setattr(existing_row, name, value)
     session.commit()
     return created, updated

@@ -261,6 +261,16 @@ def _is_cache_hit(
         candidate.embedding_model == model_name
         and candidate.embedding_input_hash == input_hash
         and candidate.semantic_status
+        in {
+            "semantic_rejected",
+            "semantic_weak",
+            "semantic_review",
+            "semantic_strong",
+            "rejected",
+            "weak",
+            "review",
+            "strong",
+        }
         and candidate.semantic_travel_score is not None
         and candidate.semantic_positive_score is not None
         and candidate.semantic_positive_category

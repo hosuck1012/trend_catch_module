@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.context_v2.context_extractor import extract_keyword_contexts
 from app.context_v2.sentence_splitter import split_sentences
@@ -409,7 +409,8 @@ def test_prefilter_process_all_is_complete_and_restart_safe(client, db_session) 
     assert second_payload["created"] == 0
     assert second_payload["updated"] == 0
     assert second_payload["skipped"] == context_total
-    assert second_payload["batches"] == 0
+    assert second_payload["batches"] == (context_total + 1) // 2
+    assert second_payload["cache_hits"] == context_total
     assert (db_session.scalar(select(func.count(TravelOpportunityCandidate.id))) or 0) == row_count
     assert dict(
         db_session.execute(
@@ -471,6 +472,216 @@ def test_prefilter_force_preview_counts_mixed_rows_and_force_false_preserves_sem
     assert existing.semantic_status == "semantic_review"
     assert existing.semantic_travel_score == 77.0
     assert existing.ranking_status == "review"
+
+
+def test_rule_cache_is_invalidated_when_entity_evidence_changes(db_session) -> None:
+    _seed_travel(db_session)
+    build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+    first = prefilter_travel_opportunities(
+        db_session,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=10,
+        process_all=True,
+    )
+    assert first.created >= 1
+    row = db_session.scalar(
+        select(TravelOpportunityCandidate).where(
+            TravelOpportunityCandidate.normalized_keyword == "8월의크리스마스"
+        )
+    )
+    assert row is not None
+    first_hash = row.rule_input_hash
+    film_document_id = row.keyword_context.document_id
+    db_session.add(
+        EntityMention(
+            document_id=film_document_id,
+            text="허진호",
+            normalized_text="허진호",
+            entity_type="PERSON",
+            confidence=0.91,
+            extractor="gliner",
+            start_char=10,
+            end_char=13,
+            source="newsis_rss",
+            occurred_at=NOW,
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+
+    second = prefilter_travel_opportunities(
+        db_session,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=10,
+        process_all=True,
+    )
+    db_session.refresh(row)
+
+    assert second.updated >= 1
+    assert row.rule_input_hash != first_hash
+
+
+def test_full_context_sync_removes_stale_context_and_rule(db_session) -> None:
+    _seed_travel(db_session)
+    build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+    prefilter_travel_opportunities(
+        db_session,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=True,
+        limit=10,
+        process_all=True,
+    )
+    stale_context = db_session.scalar(
+        select(KeywordContext).where(KeywordContext.normalized_keyword == "삼성전자")
+    )
+    assert stale_context is not None
+    stale_id = stale_context.id
+    db_session.execute(
+        delete(KeywordOccurrence).where(
+            KeywordOccurrence.normalized_keyword == "삼성전자"
+        )
+    )
+    db_session.commit()
+
+    preview = build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=True,
+        process_all=True,
+    )
+    applied = build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+
+    assert preview.stale_contexts >= 1
+    assert applied.removed >= 1
+    assert db_session.get(KeywordContext, stale_id) is None
+    assert db_session.scalar(
+        select(func.count(TravelOpportunityCandidate.id)).where(
+            TravelOpportunityCandidate.keyword_context_id == stale_id
+        )
+    ) == 0
+
+
+def test_full_context_sync_preserves_existing_rows_when_quality_set_is_empty(db_session) -> None:
+    document = _source_document("preserved-context", NOW)
+    db_session.add(document)
+    db_session.flush()
+    context = KeywordContext(
+        document_id=document.id,
+        keyword="보존 키워드",
+        normalized_keyword="보존키워드",
+        previous_sentence=None,
+        matched_sentence="보존 키워드 문맥",
+        next_sentence=None,
+        combined_context="보존 키워드 문맥",
+        occurrence_index=0,
+        source=document.source,
+        published_at=document.published_at,
+        context_hash="preserve-when-upstream-empty",
+        created_at=CANDIDATE_CREATED_AT,
+        updated_at=CANDIDATE_CREATED_AT,
+    )
+    db_session.add(context)
+    db_session.commit()
+    context_id = context.id
+
+    result = build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+
+    assert result.removed == 0
+    assert result.stale_contexts == 0
+    assert db_session.get(KeywordContext, context_id) is not None
+
+
+def test_new_specific_phrase_gets_context_without_duplicates(db_session) -> None:
+    document = SourceDocument(
+        source="newsis_rss",
+        source_id="gold-festival",
+        title="설봉산 별빛축제 개막",
+        text="설봉산 별빛축제가 설봉공원에서 열린다.",
+        published_at=NOW,
+        collected_at=NOW,
+        views=None,
+        likes=None,
+        comments=None,
+        url="https://example.test/gold-festival",
+    )
+    db_session.add(document)
+    db_session.flush()
+    db_session.add_all(
+        [
+            KeywordOccurrence(
+                document_id=document.id,
+                keyword="설봉산 별빛축제",
+                normalized_keyword="설봉산별빛축제",
+                source=document.source,
+                occurred_at=NOW,
+                keyword_quality_score=90,
+                pipeline_version="v2",
+            ),
+            _candidate(document.id, "설봉산별빛축제", accepted=True),
+            _trend("설봉산별빛축제", 80, 2),
+        ]
+    )
+    db_session.commit()
+
+    first = build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+    second = build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+
+    assert first.created == 1
+    assert second.created == 0
+    assert db_session.scalar(
+        select(func.count(KeywordContext.id)).where(
+            KeywordContext.normalized_keyword == "설봉산별빛축제"
+        )
+    ) == 1
 
 
 def test_prefilter_empty_cursor_page_is_safe(client, db_session) -> None:

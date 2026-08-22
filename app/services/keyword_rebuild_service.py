@@ -449,7 +449,12 @@ def _reconnect_search(session, week_start, week_end) -> None:
 
 def _rebuild_entity_links(session, week_start, week_end) -> None:
     trends = list(
-        session.scalars(select(WeeklyTrend).where(WeeklyTrend.week_start == week_start)).all()
+        session.scalars(
+            select(WeeklyTrend).where(
+                WeeklyTrend.week_start == week_start,
+                WeeklyTrend.status.in_(("weekly_trend", "watchlist")),
+            )
+        ).all()
     )
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     for trend in trends:

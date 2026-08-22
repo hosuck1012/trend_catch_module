@@ -29,6 +29,10 @@ class BuildContextsResponse(BaseModel):
     has_more: bool = False
     batches: int = 0
     errors: int = 0
+    existing_valid: int = 0
+    stale_contexts: int = 0
+    removed: int = 0
+    unmatched_accepted_pairs: int = 0
 
 
 class TravelCandidatePreviewResponse(BaseModel):
@@ -69,6 +73,12 @@ class PrefilterResponse(BaseModel):
     has_more: bool = False
     batches: int = 0
     errors: int = 0
+    cache_hits: int = 0
+    rule_version: str = "v2-rule-2"
+    category_counts: dict[str, int] = Field(default_factory=dict)
+    reasoning_code_counts: dict[str, int] = Field(default_factory=dict)
+    primary_entity_count: int = 0
+    other_percentage: float = 0.0
 
 
 class SemanticCandidatePreviewResponse(BaseModel):

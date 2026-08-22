@@ -36,6 +36,10 @@ class BuildContextsResult:
     has_more: bool = False
     batches: int = 0
     errors: int = 0
+    existing_valid: int = 0
+    stale_contexts: int = 0
+    removed: int = 0
+    unmatched_accepted_pairs: int = 0
 
 
 def build_keyword_contexts(
@@ -59,6 +63,23 @@ def build_keyword_contexts(
         limit=None,
     )
     examples: list[ContextExample] = []
+    full_sync = bool(process_all and after_id is None and resolved_start and resolved_end)
+    # An empty quality-keyword set can be transient (for example, while an
+    # upstream rebuild is incomplete). It is not sufficient evidence that every
+    # existing context in the active week is stale.
+    cleanup_enabled = bool(full_sync and keywords)
+    existing_before = (
+        repo.get_keyword_contexts_in_range(
+            session,
+            week_start=resolved_start,
+            week_end=resolved_end,
+        )
+        if cleanup_enabled
+        else []
+    )
+    valid_context_keys: set[tuple[int, str, str]] = set()
+    accepted_pairs: set[tuple[int, str]] = set()
+    matched_pairs: set[tuple[int, str]] = set()
     keyword_values: set[str] = set()
     document_ids: set[int] = set()
     contexts_found = 0
@@ -88,6 +109,8 @@ def build_keyword_contexts(
         for occurrence, document in rows:
             keyword_values.add(occurrence.normalized_keyword)
             document_ids.add(document.id)
+            pair = (document.id, occurrence.normalized_keyword)
+            accepted_pairs.add(pair)
             extracted = extract_keyword_contexts(
                 text=f"{document.title}\n{document.text}".strip(),
                 keyword=occurrence.keyword,
@@ -97,7 +120,12 @@ def build_keyword_contexts(
                 max_chars=settings.context_max_chars,
             )
             contexts_found += len(extracted)
+            if extracted:
+                matched_pairs.add(pair)
             for context in extracted:
+                valid_context_keys.add(
+                    (document.id, context.normalized_keyword, context.context_hash)
+                )
                 payload = {
                     "document_id": document.id,
                     "keyword": context.keyword,
@@ -153,6 +181,23 @@ def build_keyword_contexts(
         if batches >= 100_000:
             raise RuntimeError("Context pagination exceeded safety limit")
         cursor = page_next_cursor
+    existing_valid = sum(
+        (row.document_id, row.normalized_keyword, row.context_hash) in valid_context_keys
+        for row in existing_before
+    )
+    stale_ids = [
+        row.id
+        for row in existing_before
+        if (row.document_id, row.normalized_keyword, row.context_hash)
+        not in valid_context_keys
+    ]
+    removed = 0
+    if not dry_run and stale_ids:
+        removed = repo.delete_keyword_contexts(session, context_ids=stale_ids)
+    if not dry_run and (created or removed):
+        # Context creation and stale cleanup form one synchronization unit. A
+        # later-page failure must not leave an incomplete partial rebuild.
+        session.commit()
     return BuildContextsResult(
         status="dry_run" if dry_run else "ok",
         dry_run=dry_run,
@@ -169,6 +214,10 @@ def build_keyword_contexts(
         next_cursor=next_cursor,
         has_more=has_more,
         batches=batches,
+        existing_valid=existing_valid,
+        stale_contexts=len(stale_ids),
+        removed=removed,
+        unmatched_accepted_pairs=len(accepted_pairs - matched_pairs),
     )
 
 

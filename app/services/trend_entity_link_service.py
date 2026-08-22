@@ -78,12 +78,8 @@ def link_trends_to_entities(session: Session) -> TrendEntityLinkResult:
 def _group_mentions(
     mentions: list[EntityMention], keyword: str
 ) -> dict[tuple[str, str], list[EntityMention]]:
-    normalized_keyword = normalize_keyword(keyword) or keyword.lower()
     grouped: dict[tuple[str, str], list[EntityMention]] = defaultdict(list)
     for mention in mentions:
-        mention_as_keyword = normalize_keyword(mention.normalized_text)
-        if mention_as_keyword == normalized_keyword:
-            continue
         grouped[(mention.normalized_text, mention.entity_type)].append(mention)
     return grouped
 
@@ -100,10 +96,23 @@ def _calculate_links(
 ) -> list[dict[str, object]]:
     if not groups:
         return []
-    max_mentions = max(len(items) for items in groups.values())
+    normalized_keyword = normalize_keyword(keyword) or keyword.lower()
     total_documents = max(len(set(document_ids)), 1)
+    eligible_groups = {
+        key: mentions
+        for key, mentions in groups.items()
+        if _has_link_evidence(
+            normalized_keyword=normalized_keyword,
+            normalized_entity=key[0],
+            entity_type=key[1],
+            mentions=mentions,
+        )
+    }
+    if not eligible_groups:
+        return []
+    max_mentions = max(len(items) for items in eligible_groups.values())
     links: list[dict[str, object]] = []
-    for (normalized_entity, entity_type), mentions in groups.items():
+    for (normalized_entity, entity_type), mentions in eligible_groups.items():
         mention_count = len(mentions)
         document_count = len({mention.document_id for mention in mentions})
         source_count = len({mention.source for mention in mentions})
@@ -133,9 +142,36 @@ def _calculate_links(
                 "calculated_at": calculated_at,
             }
         )
+    exact_links = [
+        link
+        for link in links
+        if (normalize_keyword(str(link["normalized_entity"])) or str(link["normalized_entity"]).lower())
+        == normalized_keyword
+    ]
     travel_links = [
         link for link in links if link["entity_type"] in {"LOCATION", "PLACE"}
     ]
-    primary = max(travel_links or links, key=lambda item: item["relation_score"])
+    primary = max(exact_links or travel_links or links, key=lambda item: item["relation_score"])
     primary["is_primary"] = True
     return sorted(links, key=lambda item: item["relation_score"], reverse=True)
+
+
+def _has_link_evidence(
+    *,
+    normalized_keyword: str,
+    normalized_entity: str,
+    entity_type: str,
+    mentions: list[EntityMention],
+) -> bool:
+    entity_as_keyword = normalize_keyword(normalized_entity) or normalized_entity.lower()
+    exact = entity_as_keyword == normalized_keyword
+    shorter = min(len(entity_as_keyword), len(normalized_keyword))
+    contained = shorter >= 4 and (
+        entity_as_keyword in normalized_keyword or normalized_keyword in entity_as_keyword
+    )
+    document_count = len({mention.document_id for mention in mentions})
+    source_count = len({mention.source for mention in mentions})
+    repeated = document_count >= 2
+    if entity_type in {"PERSON", "BRAND"}:
+        return exact or (repeated and source_count >= 2)
+    return exact or contained or repeated

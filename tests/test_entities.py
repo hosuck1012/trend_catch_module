@@ -267,12 +267,52 @@ def test_trend_entity_link_calculation_weight_and_primary(db_session) -> None:
     primary = next(link for link in links if link.is_primary)
 
     assert result.status == "ok"
-    assert result.inserted_links == 2
+    assert result.inserted_links == 1
     assert primary.entity_type == "LOCATION"
     assert primary.normalized_entity == "제주특별자치도"
-    assert primary.relation_score > next(
-        link.relation_score for link in links if link.entity_type == "PERSON"
+    assert all(link.entity_type != "PERSON" for link in links)
+
+
+def test_exact_entity_link_is_primary_and_rebuild_is_idempotent(db_session) -> None:
+    trend = _add_weekly_trend(db_session, keyword="거제야호")
+    document = _add_document(db_session, title="거제야호 밈 여행")
+    document.published_at = datetime(2026, 7, 30, 12)
+    db_session.add_all(
+        [
+            KeywordOccurrence(
+                document_id=document.id,
+                keyword="거제야호",
+                normalized_keyword="거제야호",
+                source=document.source,
+                occurred_at=document.published_at,
+            ),
+            EntityMention(
+                document_id=document.id,
+                text="거제야호",
+                normalized_text="거제야호",
+                entity_type="MEME",
+                confidence=0.95,
+                extractor="rule",
+                start_char=0,
+                end_char=4,
+                source=document.source,
+                occurred_at=document.published_at,
+                created_at=datetime.now(),
+            ),
+        ]
     )
+    db_session.commit()
+
+    first = link_trends_to_entities(db_session)
+    first_count = db_session.scalar(select(func.count(TrendEntityLink.id)))
+    second = link_trends_to_entities(db_session)
+    links = list(db_session.scalars(select(TrendEntityLink)))
+
+    assert trend.week_start == date(2026, 7, 25)
+    assert first.inserted_links == second.inserted_links == first_count == len(links) == 1
+    assert links[0].normalized_entity == "거제야호"
+    assert links[0].entity_type == "MEME"
+    assert links[0].is_primary is True
 
 
 @pytest.mark.parametrize("travel_type", ["LOCATION", "PLACE"])
@@ -285,7 +325,13 @@ def test_location_and_place_receive_travel_weight(travel_type) -> None:
                 document_id=1,
                 source="youtube",
                 confidence=0.5,
-            )
+            ),
+            SimpleNamespace(
+                text="여행객체",
+                document_id=2,
+                source="newsis_rss",
+                confidence=0.5,
+            ),
         ],
         ("아이유", "PERSON"): [
             SimpleNamespace(
@@ -293,7 +339,13 @@ def test_location_and_place_receive_travel_weight(travel_type) -> None:
                 document_id=1,
                 source="youtube",
                 confidence=0.5,
-            )
+            ),
+            SimpleNamespace(
+                text="아이유",
+                document_id=2,
+                source="newsis_rss",
+                confidence=0.5,
+            ),
         ],
     }
 
@@ -301,8 +353,8 @@ def test_location_and_place_receive_travel_weight(travel_type) -> None:
         keyword="테스트",
         week_start=date(2026, 7, 25),
         week_end=date(2026, 7, 31),
-        document_ids=[1],
-        total_source_count=1,
+        document_ids=[1, 2],
+        total_source_count=2,
         groups=groups,
         calculated_at=occurred_at,
     )
