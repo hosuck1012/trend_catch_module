@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import html
 import re
 
@@ -41,6 +41,7 @@ class CandidateEvidence:
     body_occurrence: int
     entity_type: str | None = None
     entity_confidence: float | None = None
+    supporting_extractors: tuple[str, ...] = ()
 
 
 def clean_analysis_text(value: str) -> str:
@@ -107,10 +108,22 @@ def extract_candidates(
             body_occurrence=body_count,
             entity_type=entity_type,
             entity_confidence=confidence,
+            supporting_extractors=(extractor,),
         )
         existing = merged.get(normalized)
-        if existing is None or _priority(candidate) > _priority(existing):
+        if existing is None:
             merged[normalized] = candidate
+            continue
+        winner = candidate if _priority(candidate) > _priority(existing) else existing
+        supporting_extractors = tuple(
+            dict.fromkeys(
+                (*existing.supporting_extractors, *candidate.supporting_extractors)
+            )
+        )
+        merged[normalized] = replace(
+            winner,
+            supporting_extractors=supporting_extractors,
+        )
     return list(merged.values())
 
 

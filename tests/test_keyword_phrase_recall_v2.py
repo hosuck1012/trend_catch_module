@@ -1,13 +1,21 @@
-from datetime import datetime
+from datetime import date, datetime
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import func, select
 
 from app.keywords.candidate_extractor import EntityEvidence, extract_candidates
 from app.keywords.keyword_normalizer import normalize_keyword
 from app.keywords.phrase_signals import phrase_suffix_categories, phrase_suffixes
 from app.keywords.tokenizer import RegexFallbackTokenizer
+from app.models.entity_mention import EntityMention
+from app.models.keyword_candidate import KeywordCandidate
+from app.models.keyword_occurrence import KeywordOccurrence
+from app.models.source_document import SourceDocument
+from app.models.trend_entity_link import TrendEntityLink
+from app.models.weekly_trend import WeeklyTrend
 from app.services.keyword_extraction_v2_service import analyze_documents
+from app.services.keyword_rebuild_service import rebuild_keywords
 
 
 NOW = datetime(2026, 8, 1, 9, 0, 0)
@@ -236,3 +244,199 @@ def test_noisy_leading_title_keeps_shorter_event_anchor() -> None:
 
     assert candidate.accepted is True
     assert candidate.extractor == "phrase_pattern"
+
+
+@pytest.mark.parametrize(
+    "phrase, entity_type",
+    (
+        ("설봉산 별빛축제", "EVENT"),
+        ("홍천강 별빛음악 맥주축제", "EVENT"),
+        ("펜타포트 락 페스티벌", "EVENT"),
+        ("한강 밤핑", "MEME"),
+        ("경남고성공룡세계엑스포", "EVENT"),
+        ("부산국제불교박람회", "EVENT"),
+        ("2026 국악관현악축제", "EVENT"),
+        ("RESTOPIA", "MEME"),
+    ),
+)
+def test_rebuild_persists_concrete_phrase_with_matching_entity_evidence(
+    db_session,
+    phrase: str,
+    entity_type: str,
+) -> None:
+    document = _persisted_document(db_session, phrase, source_id=f"gold-{normalize_keyword(phrase)}")
+    db_session.add(
+        EntityMention(
+            document_id=document.id,
+            text=phrase,
+            normalized_text=normalize_keyword(phrase),
+            entity_type=entity_type,
+            confidence=0.9,
+            extractor="gliner",
+            start_char=0,
+            end_char=len(phrase),
+            source=document.source,
+            occurred_at=document.published_at,
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+
+    rebuild_keywords(
+        db_session,
+        week_start=date(2026, 7, 26),
+        since_days=30,
+        dry_run=False,
+        force=True,
+        limit=100,
+    )
+
+    normalized = normalize_keyword(phrase)
+    candidate = db_session.scalar(
+        select(KeywordCandidate).where(
+            KeywordCandidate.document_id == document.id,
+            KeywordCandidate.normalized_candidate == normalized,
+        )
+    )
+    assert candidate is not None
+    assert candidate.accepted is True
+    assert db_session.scalar(
+        select(func.count(KeywordOccurrence.id)).where(
+            KeywordOccurrence.document_id == document.id,
+            KeywordOccurrence.normalized_keyword == normalized,
+        )
+    ) == 1
+    before_second_run = tuple(
+        db_session.scalar(select(func.count(model.id))) or 0
+        for model in (
+            KeywordCandidate,
+            KeywordOccurrence,
+            WeeklyTrend,
+            TrendEntityLink,
+        )
+    )
+
+    second = rebuild_keywords(
+        db_session,
+        week_start=date(2026, 7, 26),
+        since_days=30,
+        dry_run=False,
+        force=True,
+        limit=100,
+    )
+
+    assert second.added_keywords == []
+    assert second.removed_keywords == []
+    assert tuple(
+        db_session.scalar(select(func.count(model.id))) or 0
+        for model in (
+            KeywordCandidate,
+            KeywordOccurrence,
+            WeeklyTrend,
+            TrendEntityLink,
+        )
+    ) == before_second_run
+
+
+@pytest.mark.parametrize("phrase", NEGATIVE_PHRASES)
+def test_rebuild_does_not_accept_generic_or_garbage_phrase(db_session, phrase: str) -> None:
+    document = _persisted_document(
+        db_session,
+        phrase,
+        source_id=f"negative-{normalize_keyword(phrase)}",
+    )
+    db_session.commit()
+
+    rebuild_keywords(
+        db_session,
+        week_start=date(2026, 7, 26),
+        since_days=30,
+        dry_run=False,
+        force=True,
+        limit=100,
+    )
+
+    normalized = normalize_keyword(phrase)
+    assert db_session.scalar(
+        select(func.count(KeywordCandidate.id)).where(
+            KeywordCandidate.document_id == document.id,
+            KeywordCandidate.normalized_candidate == normalized,
+            KeywordCandidate.accepted.is_(True),
+        )
+    ) == 0
+    assert db_session.scalar(
+        select(func.count(KeywordOccurrence.id)).where(
+            KeywordOccurrence.document_id == document.id,
+            KeywordOccurrence.normalized_keyword == normalized,
+        )
+    ) == 0
+
+
+@pytest.mark.parametrize(
+    "phrase, generic_parts",
+    (
+        ("펜타포트 락 페스티벌", ("펜타포트", "락", "페스티벌")),
+        ("설봉산 별빛축제", ("설봉산", "별빛", "축제")),
+    ),
+)
+def test_rebuild_keeps_longer_specific_phrase_when_generic_parts_coexist(
+    db_session,
+    phrase: str,
+    generic_parts: tuple[str, ...],
+) -> None:
+    document = _persisted_document(
+        db_session,
+        f"{phrase} {' '.join(generic_parts)}",
+        source_id=f"longer-{normalize_keyword(phrase)}",
+    )
+    db_session.add(
+        EntityMention(
+            document_id=document.id,
+            text=phrase,
+            normalized_text=normalize_keyword(phrase),
+            entity_type="EVENT",
+            confidence=0.9,
+            extractor="gliner",
+            start_char=0,
+            end_char=len(phrase),
+            source=document.source,
+            occurred_at=document.published_at,
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+
+    rebuild_keywords(
+        db_session,
+        week_start=date(2026, 7, 26),
+        since_days=30,
+        dry_run=False,
+        force=True,
+        limit=100,
+    )
+
+    assert db_session.scalar(
+        select(func.count(KeywordCandidate.id)).where(
+            KeywordCandidate.document_id == document.id,
+            KeywordCandidate.normalized_candidate == normalize_keyword(phrase),
+            KeywordCandidate.accepted.is_(True),
+        )
+    ) == 1
+
+
+def _persisted_document(db_session, title: str, *, source_id: str) -> SourceDocument:
+    document = SourceDocument(
+        source="test",
+        source_id=source_id,
+        title=title,
+        text=f"{title} 관련 소식이다. {title}",
+        published_at=NOW,
+        collected_at=NOW,
+        views=None,
+        likes=None,
+        comments=None,
+        url=f"https://example.test/{source_id}",
+    )
+    db_session.add(document)
+    db_session.flush()
+    return document

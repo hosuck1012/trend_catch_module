@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 import re
 
+from app.keywords.keyword_normalizer import normalize_keyword
+
 
 _SENTENCE_ENDINGS = {".", "?", "!", "。", "！", "？"}
 _CLOSING_QUOTES = {'"', "'", "’", "”", "』", "」", "》", ")", "]"}
+_NORMALIZED_MATCH_BOUNDARIES = {*_SENTENCE_ENDINGS, "\n", "\r"}
 
 
 @dataclass(frozen=True)
@@ -58,7 +61,37 @@ def find_keyword_occurrences(text: str, keyword: str) -> list[tuple[int, int]]:
     pattern = re.escape(keyword)
     flags = re.IGNORECASE if keyword.isascii() else 0
     matches = [(match.start(), match.end()) for match in re.finditer(pattern, text, flags)]
-    if matches or " " not in keyword:
+    if matches:
         return matches
-    compact_pattern = re.escape(keyword.replace(" ", ""))
-    return [(match.start(), match.end()) for match in re.finditer(compact_pattern, text, flags)]
+    compact = keyword.replace(" ", "")
+    compact_pattern = re.escape(compact)
+    compact_matches = [
+        (match.start(), match.end())
+        for match in re.finditer(compact_pattern, text, flags)
+    ]
+    if compact_matches:
+        return compact_matches
+    return _normalized_occurrences(text, keyword)
+
+
+def _normalized_occurrences(text: str, keyword: str) -> list[tuple[int, int]]:
+    normalized_keyword = normalize_keyword(keyword) or ""
+    if not normalized_keyword:
+        return []
+    normalized_chars: list[str] = []
+    source_positions: list[int] = []
+    for index, char in enumerate(text):
+        if char in _NORMALIZED_MATCH_BOUNDARIES:
+            normalized_chars.append("\0")
+            source_positions.append(index)
+            continue
+        normalized = normalize_keyword(char)
+        if not normalized:
+            continue
+        normalized_chars.append(normalized)
+        source_positions.extend([index] * len(normalized))
+    normalized_text = "".join(normalized_chars)
+    return [
+        (source_positions[match.start()], source_positions[match.end() - 1] + 1)
+        for match in re.finditer(re.escape(normalized_keyword), normalized_text)
+    ]

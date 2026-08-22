@@ -8,6 +8,7 @@ from app.keywords.phrase_signals import (
     is_standalone_phrase_suffix,
     phrase_specificity_signal,
 )
+from app.keywords.protected_phrases import PROTECTABLE_ENTITY_TYPES
 from app.keywords.stopword_filter import rejection_reason
 
 
@@ -79,7 +80,11 @@ def evaluate_candidate(
         return QualityDecision(0.0, False, "too_short")
     if len(value) > settings.keyword_max_length:
         return QualityDecision(0.0, False, "invalid_characters")
-    if candidate.extractor == "ner" and context.document_count < 2:
+    if (
+        candidate.extractor == "ner"
+        and context.document_count < 2
+        and not _has_concrete_single_document_entity_evidence(candidate)
+    ):
         return QualityDecision(0.0, False, "low_frequency")
     if (
         candidate.extractor in {"title_phrase", "kiwi_phrase", "phrase_pattern"}
@@ -131,3 +136,22 @@ def evaluate_candidate(
     score = round(max(0.0, min(100.0, score)), 2)
     accepted = score >= settings.keyword_min_quality_score
     return QualityDecision(score, accepted, None if accepted else "low_quality")
+
+
+def _has_concrete_single_document_entity_evidence(candidate: CandidateEvidence) -> bool:
+    if (
+        candidate.entity_type not in PROTECTABLE_ENTITY_TYPES
+        or (candidate.entity_confidence or 0.0) < 0.8
+    ):
+        return False
+    supporting = set(candidate.supporting_extractors)
+    if supporting & {"phrase_pattern", "structural_phrase", "protected_phrase"}:
+        return bool(candidate.title_occurrence or candidate.body_occurrence >= 2)
+    compact = candidate.candidate_text.replace(" ", "")
+    return bool(
+        candidate.title_occurrence
+        and candidate.body_occurrence
+        and compact.isascii()
+        and compact.isalpha()
+        and compact.isupper()
+    )

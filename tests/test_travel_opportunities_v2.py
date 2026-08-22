@@ -3,7 +3,7 @@ from datetime import date, datetime
 from sqlalchemy import delete, func, select
 
 from app.context_v2.context_extractor import extract_keyword_contexts
-from app.context_v2.sentence_splitter import split_sentences
+from app.context_v2.sentence_splitter import find_keyword_occurrences, split_sentences
 from app.context_v2.travel_rules import EntitySignal, TrendSignal, evaluate_travel_rules, load_terms
 from app.models.entity_mention import EntityMention
 from app.models.keyword_candidate import KeywordCandidate
@@ -36,6 +36,14 @@ def test_korean_sentence_splitter_handles_quotes_and_newlines() -> None:
 def test_english_sentence_splitter() -> None:
     text = 'First sentence. "Second sentence?" Third sentence!'
     assert split_sentences(text) == ["First sentence.", '"Second sentence?"', "Third sentence!"]
+
+
+def test_normalized_keyword_match_does_not_cross_sentence_boundary() -> None:
+    assert find_keyword_occurrences("서울. 축제", "서울축제") == []
+    text = "특별전 '뱅크시: 스틸 히어' 개막"
+    start = text.index("뱅크시")
+    end = start + len("뱅크시: 스틸 히어")
+    assert find_keyword_occurrences(text, "뱅크시 스틸 히어") == [(start, end)]
 
 
 def test_previous_matched_next_extraction() -> None:
@@ -680,6 +688,55 @@ def test_new_specific_phrase_gets_context_without_duplicates(db_session) -> None
     assert db_session.scalar(
         select(func.count(KeywordContext.id)).where(
             KeywordContext.normalized_keyword == "설봉산별빛축제"
+        )
+    ) == 1
+
+
+def test_context_sync_matches_canonical_phrase_across_punctuation(db_session) -> None:
+    document = SourceDocument(
+        source="newsis_rss",
+        source_id="punctuated-title",
+        title="특별전 '뱅크시: 스틸 히어' 개막",
+        text="뱅크시: 스틸 히어 작품을 소개한다.",
+        published_at=NOW,
+        collected_at=NOW,
+        views=None,
+        likes=None,
+        comments=None,
+        url="https://example.test/punctuated-title",
+    )
+    db_session.add(document)
+    db_session.flush()
+    db_session.add_all(
+        [
+            KeywordOccurrence(
+                document_id=document.id,
+                keyword="뱅크시 스틸 히어",
+                normalized_keyword="뱅크시스틸히어",
+                source=document.source,
+                occurred_at=NOW,
+                keyword_quality_score=70,
+                pipeline_version="v2",
+            ),
+            _candidate(document.id, "뱅크시스틸히어", accepted=True),
+            _trend("뱅크시스틸히어", 70, 1),
+        ]
+    )
+    db_session.commit()
+
+    result = build_keyword_contexts(
+        db_session,
+        week_start=WEEK_START,
+        limit=10,
+        force=False,
+        dry_run=False,
+        process_all=True,
+    )
+
+    assert result.created == 1
+    assert db_session.scalar(
+        select(func.count(KeywordContext.id)).where(
+            KeywordContext.normalized_keyword == "뱅크시스틸히어"
         )
     ) == 1
 
