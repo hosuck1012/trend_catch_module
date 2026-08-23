@@ -174,7 +174,8 @@ def test_high_precision_formula_and_ranking_boundaries() -> None:
     ) == 80
     assert classify_ranking(69.99, "PASS") == "rejected"
     assert classify_ranking(70, "PASS") == "review"
-    assert classify_ranking(85, "PASS") == "gemini_candidate"
+    assert classify_ranking(79.99, "PASS") == "review"
+    assert classify_ranking(80, "PASS") == "gemini_candidate"
     assert classify_ranking(90, "PASS") == "priority_candidate"
     assert classify_ranking(95, "NEEDS_EVIDENCE") == "gemini_candidate"
     assert classify_ranking(99, "REJECT") == "rejected"
@@ -192,6 +193,17 @@ def test_weekly_budget_prioritizes_priority_then_gemini_and_does_not_fill() -> N
         "priority",
         "gemini-high",
     ]
+
+
+def test_weekly_budget_requires_passed_evidence_even_for_high_scores() -> None:
+    passed = _ranked("verified-travel-topic", 81.5, "gemini_candidate")
+    needs_evidence = _ranked("unverified-location", 95, "gemini_candidate")
+    needs_evidence.evidence_gate = "NEEDS_EVIDENCE"
+
+    assign_gemini_budget([passed, needs_evidence], max_candidates=2)
+
+    assert passed.gemini_eligible is True
+    assert needs_evidence.gemini_eligible is False
 
 
 def test_duplicate_cluster_and_representative_selection() -> None:
@@ -281,6 +293,51 @@ def test_rank_dry_run_keeps_db_unchanged_and_never_calls_gemini(
     assert before == after == 0
 
 
+def test_ranking_scopes_evidence_and_persistence_to_semantic_eligible_rows(
+    client, db_session
+) -> None:
+    _seed_rankable_candidates(db_session)
+    festival_rows = list(
+        db_session.scalars(
+            select(TravelOpportunityCandidate)
+            .where(TravelOpportunityCandidate.normalized_keyword == "부산불꽃축제")
+            .order_by(TravelOpportunityCandidate.id)
+        ).all()
+    )
+    excluded = festival_rows[-1]
+    excluded.semantic_status = "semantic_weak"
+    db_session.commit()
+
+    dry_run = client.post(
+        "/api/travel-opportunities/rank",
+        params={"week_start": WEEK_START.isoformat(), "dry_run": True},
+    )
+    assert dry_run.status_code == 200
+    festival = next(
+        item
+        for item in dry_run.json()["top_candidates"]
+        if item["normalized_keyword"] == "부산불꽃축제"
+    )
+    assert festival["evidence_document_count"] == 2
+    assert festival["evidence_source_count"] == 2
+
+    materialized = client.post(
+        "/api/travel-opportunities/rank",
+        params={
+            "week_start": WEEK_START.isoformat(),
+            "dry_run": False,
+            "force": True,
+        },
+    )
+    assert materialized.status_code == 200
+    db_session.expire_all()
+    assert db_session.get(TravelOpportunityCandidate, excluded.id).ranking_version is None
+    assert all(
+        db_session.get(TravelOpportunityCandidate, row.id).ranking_version is not None
+        for row in festival_rows[:-1]
+    )
+
+
 def test_persisted_rank_and_calibration_dashboard_summary(client, db_session) -> None:
     _seed_rankable_candidates(db_session)
     ranked = client.post(
@@ -294,7 +351,7 @@ def test_persisted_rank_and_calibration_dashboard_summary(client, db_session) ->
     assert ranked.status_code == 200
     assert report.status_code == 200
     payload = report.json()
-    assert payload["ranking_version"] == "v2-step3-local-1"
+    assert payload["ranking_version"] == "v2-step3-local-2"
     assert payload["total_semantic_candidates"] == 3
     assert sum(payload["evidence_gate_counts"].values()) == 3
     assert payload["funnel"]["gemini_eligible"] <= payload["weekly_gemini_budget"]

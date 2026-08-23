@@ -137,6 +137,11 @@ def semantic_filter_travel_opportunities(
             candidate_text=candidate_text,
             scorer_signature=scorer.cache_signature,
             precision_signature=precision_evidence[candidate.id].cache_signature,
+            rule_input_hash=candidate.rule_input_hash,
+            rule_version=candidate.rule_version,
+            rule_status=candidate.prefilter_status,
+            rule_score=candidate.travel_pre_score,
+            rule_category=candidate.travel_category,
         )
         if not force and _is_cache_hit(candidate, input_hash=input_hash, model_name=model_name):
             cache_hits += 1
@@ -164,6 +169,11 @@ def semantic_filter_travel_opportunities(
             candidate_text=candidate_text,
             scorer_signature=scorer.cache_signature,
             precision_signature=precision_evidence[candidate.id].cache_signature,
+            rule_input_hash=candidate.rule_input_hash,
+            rule_version=candidate.rule_version,
+            rule_status=candidate.prefilter_status,
+            rule_score=candidate.travel_pre_score,
+            rule_category=candidate.travel_category,
         )
         calibrated = _calibrate_score(
             score,
@@ -230,6 +240,11 @@ def semantic_input_hash(
     candidate_text: str,
     scorer_signature: str,
     precision_signature: str,
+    rule_input_hash: str | None,
+    rule_version: str | None,
+    rule_status: str,
+    rule_score: float,
+    rule_category: str,
 ) -> str:
     payload = "\x1f".join(
         (
@@ -239,6 +254,11 @@ def semantic_input_hash(
             scoring_version,
             scorer_signature,
             precision_signature,
+            rule_input_hash or "",
+            rule_version or "",
+            rule_status,
+            f"{rule_score:.12g}",
+            rule_category,
             candidate_text,
         )
     )

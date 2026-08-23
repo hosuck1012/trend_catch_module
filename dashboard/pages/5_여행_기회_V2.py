@@ -10,7 +10,6 @@ from dashboard.travel_opportunity_formatter import (
 )
 
 
-st.set_page_config(page_title="여행 기회 V2", layout="wide")
 st.title("여행 기회 V2")
 
 settings = get_dashboard_settings()
@@ -91,8 +90,22 @@ if not review_results:
 for item in review_results:
     with st.container(border=True):
         st.subheader(item["keyword"])
-        st.write("상태: 추가 근거 필요")
+        score, confidence, decision = st.columns(3)
+        score.metric("최종 점수", item.get("final_travel_score", 0))
+        confidence.metric("신뢰도", item.get("confidence_score", 0))
+        decision.metric("판정", "REVIEW")
         st.write("여행 가능성:", item.get("travel_angle") or "-")
+        verified_destinations = final_destination_names(item)
+        st.write(
+            "입력 근거로 확인된 지역:",
+            ", ".join(verified_destinations) or "-",
+        )
+        st.write("근거:", ", ".join(item.get("evidence_refs", [])) or "-")
+        if item.get("needs_external_verification"):
+            st.warning(
+                "상세 촬영 장소는 외부 검증이 필요합니다. "
+                "입력 근거에 없는 장소는 확정 정보로 표시하지 않습니다."
+            )
         st.write("확인 필요:", ", ".join(item.get("cautions", [])) or "-")
         st.write("검색 제안:", ", ".join(item.get("verification_queries", [])) or "-")
 

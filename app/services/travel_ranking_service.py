@@ -21,11 +21,11 @@ from app.repositories import travel_opportunity_repository as opportunity_repo
 from app.repositories import travel_ranking_repository as repo
 
 
-RANKING_VERSION = "v2-step3-local-1"
+RANKING_VERSION = "v2-step3-local-2"
 RANKING_THRESHOLDS = {
     "rejected_max": 69.99,
     "review_min": 70.0,
-    "gemini_candidate_min": 85.0,
+    "gemini_candidate_min": 80.0,
     "priority_candidate_min": 90.0,
 }
 NEGATIVE_SEMANTIC_CATEGORIES = {
@@ -145,14 +145,9 @@ def rank_travel_opportunities(
             continue
         grouped_rows[row.normalized_keyword].append(row)
     keywords = list(grouped_rows)
-    contexts = repo.get_keyword_contexts(
-        session, keywords=keywords, week_start=resolved_start
-    )
     contexts_by_keyword: dict[str, list[KeywordContext]] = defaultdict(list)
-    for context in contexts:
-        contexts_by_keyword[context.normalized_keyword].append(context)
     for keyword, rows in grouped_rows.items():
-        known_ids = {context.id for context in contexts_by_keyword[keyword]}
+        known_ids: set[int] = set()
         for row in rows:
             if row.keyword_context and row.keyword_context.id not in known_ids:
                 contexts_by_keyword[keyword].append(row.keyword_context)
@@ -161,13 +156,10 @@ def rank_travel_opportunities(
     trends = repo.get_weekly_trends(
         session, keywords=keywords, week_start=resolved_start
     )
-    document_ids_by_keyword = repo.get_document_ids_by_keyword(
-        session, keywords=keywords, week_start=resolved_start
-    )
-    for keyword, keyword_contexts in contexts_by_keyword.items():
-        document_ids_by_keyword.setdefault(keyword, set()).update(
-            context.document_id for context in keyword_contexts
-        )
+    document_ids_by_keyword = {
+        keyword: {context.document_id for context in keyword_contexts}
+        for keyword, keyword_contexts in contexts_by_keyword.items()
+    }
     all_document_ids = set().union(*document_ids_by_keyword.values()) if keywords else set()
     documents = repo.get_documents(session, all_document_ids)
     mentions = repo.get_entity_mentions(session, all_document_ids)
@@ -588,11 +580,11 @@ def calculate_high_precision_score(
 
 
 def classify_ranking(score: float, evidence_gate: str) -> str:
-    if evidence_gate == "REJECT" or score < 70:
+    if evidence_gate == "REJECT" or score < RANKING_THRESHOLDS["review_min"]:
         return "rejected"
-    if score < 85:
+    if score < RANKING_THRESHOLDS["gemini_candidate_min"]:
         return "review"
-    if score < 90:
+    if score < RANKING_THRESHOLDS["priority_candidate_min"]:
         return "gemini_candidate"
     if evidence_gate == "PASS":
         return "priority_candidate"
@@ -654,7 +646,7 @@ def assign_gemini_budget(
         for item in candidates
         if item.cluster_representative
         and item.ranking_status in {"priority_candidate", "gemini_candidate"}
-        and item.evidence_gate != "REJECT"
+        and item.evidence_gate == "PASS"
     ]
     eligible.sort(
         key=lambda item: (

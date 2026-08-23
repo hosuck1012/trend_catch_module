@@ -262,6 +262,11 @@ def test_input_hash_changes_for_model_context_anchor_or_text() -> None:
         "candidate_text": "text-a",
         "scorer_signature": "scorer-a",
         "precision_signature": "precision-a",
+        "rule_input_hash": "rule-hash-a",
+        "rule_version": "rule-v1",
+        "rule_status": "weak",
+        "rule_score": 50.0,
+        "rule_category": "FESTIVAL",
     }
     base = semantic_input_hash(**defaults)
     variants = {
@@ -272,10 +277,15 @@ def test_input_hash_changes_for_model_context_anchor_or_text() -> None:
         semantic_input_hash(**(defaults | {"candidate_text": "text-b"})),
         semantic_input_hash(**(defaults | {"scorer_signature": "scorer-b"})),
         semantic_input_hash(**(defaults | {"precision_signature": "precision-b"})),
+        semantic_input_hash(**(defaults | {"rule_input_hash": "rule-hash-b"})),
+        semantic_input_hash(**(defaults | {"rule_version": "rule-v2"})),
+        semantic_input_hash(**(defaults | {"rule_status": "review"})),
+        semantic_input_hash(**(defaults | {"rule_score": 55.0})),
+        semantic_input_hash(**(defaults | {"rule_category": "CONCERT"})),
     }
     assert len(base) == 64
     assert base not in variants
-    assert len(variants) == 7
+    assert len(variants) == 12
 
 
 @pytest.mark.parametrize("keyword", ["가격", "친절", "적용", "도전", "주역"])
@@ -304,7 +314,7 @@ def test_generic_single_topic_is_rejected_despite_travel_context(keyword: str) -
     assert result.semantic_travel_score == 0
     assert "GENERIC_TOPIC" in result.reasoning_codes
     assert "TOPIC_SPECIFICITY_FAIL" in result.reasoning_codes
-    assert "CATEGORY_CONTEXT_MATCH" in result.reasoning_codes
+    assert "CATEGORY_LOCAL_EVIDENCE_FAIL" in result.reasoning_codes
 
 
 def test_single_high_value_entity_and_multi_token_topic_are_exceptions() -> None:
@@ -529,6 +539,432 @@ def test_margin_gate_rejects_negative_and_caps_low_positive_margin() -> None:
     assert "LOW_SEMANTIC_MARGIN" in low.reasoning_codes
 
 
+def test_entity_alignment_and_locality_are_candidate_scoped() -> None:
+    exact = _localized_precision_candidate(
+        keyword="제주",
+        entity_type="LOCATION",
+        travel_category="LANDMARK",
+        matched="제주의 관광 명소를 방문한다.",
+    )
+    partial = _localized_precision_candidate(
+        keyword="폭싹 속았수다 촬영지",
+        entity_type="CONTENT_TITLE",
+        travel_category="DRAMA_LOCATION",
+        matched="드라마 폭싹 속았수다 촬영지를 여행객이 방문한다.",
+        entity_text="폭싹 속았수다",
+    )
+    unrelated = _localized_precision_candidate(
+        keyword="국가",
+        entity_type=None,
+        travel_category="LANDMARK",
+        matched="근대 주권국가를 설명한다.",
+        entity_text="서울",
+        context_entity_type="LOCATION",
+    )
+
+    exact_evidence = _build_precision_evidence(exact)
+    partial_evidence = _build_precision_evidence(partial)
+    unrelated_evidence = _build_precision_evidence(unrelated)
+
+    assert exact_evidence.entity_alignment == "EXACT"
+    assert exact_evidence.entity_locality == "MATCHED_SENTENCE"
+    assert "ENTITY_KEYWORD_EXACT_MATCH" in exact_evidence.topic_codes
+    assert partial_evidence.entity_alignment == "PARTIAL"
+    assert "ENTITY_KEYWORD_PARTIAL_MATCH" in partial_evidence.topic_codes
+    assert unrelated_evidence.entity_alignment == "UNALIGNED"
+    assert unrelated_evidence.topic_specificity_pass is False
+    assert "ENTITY_KEYWORD_UNALIGNED" in unrelated_evidence.topic_codes
+
+
+def test_adjacent_entity_is_local_but_document_only_entity_is_not() -> None:
+    adjacent = _localized_precision_candidate(
+        keyword="부산불꽃축제",
+        entity_type="EVENT",
+        travel_category="FESTIVAL",
+        matched="이 행사는 올해도 열린다.",
+        previous="부산불꽃축제를 찾는 관광객이 늘었다.",
+    )
+    document_only = _localized_precision_candidate(
+        keyword="부산불꽃축제",
+        entity_type="EVENT",
+        travel_category="FESTIVAL",
+        matched="관련 정책을 설명한다.",
+        entity_in_local_context=False,
+    )
+
+    adjacent_evidence = _build_precision_evidence(adjacent)
+    document_evidence = _build_precision_evidence(document_only)
+
+    assert adjacent_evidence.entity_locality == "ADJACENT_SENTENCE"
+    assert "ENTITY_IN_ADJACENT_CONTEXT" in adjacent_evidence.topic_codes
+    assert document_evidence.entity_locality == "DOCUMENT_ONLY"
+    assert "DOCUMENT_EVIDENCE_ONLY" in document_evidence.topic_codes
+    assert _calibrate(
+        document_evidence,
+        positive_category="FESTIVAL",
+        positive=0.88,
+        negative=0.84,
+    ).semantic_status not in {"semantic_review", "semantic_strong"}
+
+
+@pytest.mark.parametrize(
+    ("keyword", "entity_type", "category", "context"),
+    [
+        ("부산불꽃축제", "EVENT", "FESTIVAL", "부산불꽃축제가 광안리에서 개최된다."),
+        ("서울 냉면", "FOOD", "FOOD", "서울 냉면 맛집을 찾는 관광객이 늘었다."),
+        ("경복궁", "PLACE", "LANDMARK", "경복궁을 찾는 관광객과 방문객이 늘었다."),
+        (
+            "폭싹 속았수다 촬영지",
+            "CONTENT_TITLE",
+            "DRAMA_LOCATION",
+            "드라마 폭싹 속았수다 촬영지를 여행객이 방문한다.",
+        ),
+    ],
+)
+def test_category_matrix_requires_aligned_local_evidence(
+    keyword: str,
+    entity_type: str,
+    category: str,
+    context: str,
+) -> None:
+    candidate = _localized_precision_candidate(
+        keyword=keyword,
+        entity_type=entity_type,
+        travel_category=category,
+        matched=context,
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category=category,
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status in {"semantic_review", "semantic_strong"}
+    assert "CATEGORY_LOCAL_EVIDENCE_PASS" in result.reasoning_codes
+
+
+@pytest.mark.parametrize(
+    ("keyword", "entity_type", "category", "context", "expected_reviewable"),
+    [
+        ("울산", "LOCATION", "FESTIVAL", "울산 여름 축제를 찾는 관광객이 늘었다.", True),
+        ("울산", "LOCATION", "LANDMARK", "울산 기업의 영업이익이 발표됐다.", False),
+        ("냉면", "FOOD", "FOOD", "서울 냉면 맛집을 찾는 관광객이 늘었다.", True),
+        ("냉면", "FOOD", "FOOD", "냉면 가격이 올랐다.", False),
+        ("뮌헨", "LOCATION", "FESTIVAL", "뮌헨 옥토버페스트를 찾는 여행객이 늘었다.", True),
+        ("뮌헨", "LOCATION", "SPORTS_EVENT", "뮌헨 축구팀 경기 결과가 발표됐다.", False),
+        ("송파구", "LOCATION", "LOCAL_CULTURE", "송파구 석촌호수 축제가 열린다.", False),
+    ],
+)
+def test_single_token_policy_depends_on_local_travel_evidence(
+    keyword: str,
+    entity_type: str,
+    category: str,
+    context: str,
+    expected_reviewable: bool,
+) -> None:
+    candidate = _localized_precision_candidate(
+        keyword=keyword,
+        entity_type=entity_type,
+        travel_category=category,
+        matched=context,
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category=category,
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert (result.semantic_status in {"semantic_review", "semantic_strong"}) is expected_reviewable
+    expected_code = (
+        "SINGLE_TOKEN_WITH_TRAVEL_EVIDENCE"
+        if expected_reviewable
+        else "SINGLE_TOKEN_INSUFFICIENT_EVIDENCE"
+    )
+    assert expected_code in result.reasoning_codes
+
+
+def test_malformed_joined_particle_fragment_is_rejected() -> None:
+    candidate = _localized_precision_candidate(
+        keyword="서울 서",
+        entity_type="LOCATION",
+        travel_category="SPORTS_EVENT",
+        matched="세계보치아선수권대회가 다음달 서울서 개막한다.",
+        entity_text="서울서",
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category="SPORTS_EVENT",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status == "semantic_rejected"
+    assert "MALFORMED_TOPIC" in result.reasoning_codes
+
+
+def test_compact_korean_compound_is_not_treated_as_malformed() -> None:
+    candidate = _localized_precision_candidate(
+        keyword="서울 숲",
+        entity_type="PLACE",
+        travel_category="NATURE",
+        matched="서울숲을 찾는 관광객이 늘었다.",
+        entity_text="서울숲",
+    )
+    evidence = _build_precision_evidence(candidate)
+    result = _calibrate(
+        evidence,
+        positive_category="NATURE",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert evidence.keyword_locality == "MATCHED_SENTENCE"
+    assert evidence.malformed_topic is False
+    assert result.semantic_status in {"semantic_review", "semantic_strong"}
+
+
+def test_unrelated_document_entity_does_not_suppress_local_primary() -> None:
+    candidate = _localized_precision_candidate(
+        keyword="울산",
+        entity_type="LOCATION",
+        travel_category="LANDMARK",
+        matched="울산을 찾는 관광객이 늘었다.",
+        entity_text="부산",
+        context_entity_type="LOCATION",
+        entity_in_local_context=False,
+    )
+    candidate.primary_entity = "울산"
+    evidence = _build_precision_evidence(candidate)
+    result = _calibrate(
+        evidence,
+        positive_category="LANDMARK",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert evidence.entity_locality == "MATCHED_SENTENCE"
+    assert result.semantic_status in {"semantic_review", "semantic_strong"}
+
+
+def test_generic_visit_alone_does_not_manufacture_festival_evidence() -> None:
+    candidate = _localized_precision_candidate(
+        keyword="서울",
+        entity_type="LOCATION",
+        travel_category="FESTIVAL",
+        matched="서울을 방문했다.",
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category="FESTIVAL",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status not in {"semantic_review", "semantic_strong"}
+    assert "CATEGORY_LOCAL_EVIDENCE_FAIL" in result.reasoning_codes
+
+
+def test_other_category_requires_explicit_travel_evidence() -> None:
+    candidate = _localized_precision_candidate(
+        keyword="한강공원",
+        entity_type="PLACE",
+        travel_category="OTHER",
+        matched="스타벅스가 한강공원을 찾아 커피를 제공하고 캠페인을 진행했다.",
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category="OTHER",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status not in {"semantic_review", "semantic_strong"}
+    assert "CATEGORY_LOCAL_EVIDENCE_FAIL" in result.reasoning_codes
+
+
+def test_regional_meme_requires_regional_context() -> None:
+    candidate = _localized_precision_candidate(
+        keyword="신조어밈",
+        entity_type="MEME",
+        travel_category="REGIONAL_MEME",
+        matched="신조어밈이 온라인에서 유행한다.",
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category="REGIONAL_MEME",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status not in {"semantic_review", "semantic_strong"}
+
+
+@pytest.mark.parametrize(
+    ("keyword", "entity_type", "category", "context"),
+    [
+        ("한라산", "PLACE", "NATURE", "한라산을 찾는 관광객이 늘었다."),
+        ("서울마라톤", "EVENT", "SPORTS_EVENT", "서울마라톤이 잠실경기장에서 개최된다."),
+    ],
+)
+def test_nature_and_hosted_sports_events_remain_reviewable(
+    keyword: str,
+    entity_type: str,
+    category: str,
+    context: str,
+) -> None:
+    candidate = _localized_precision_candidate(
+        keyword=keyword,
+        entity_type=entity_type,
+        travel_category=category,
+        matched=context,
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category=category,
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status in {"semantic_review", "semantic_strong"}
+
+
+@pytest.mark.parametrize("context", ["서울엔 관광객이 늘었다.", "서울이다."])
+def test_contracted_particle_and_copula_preserve_locality(context: str) -> None:
+    candidate = _localized_precision_candidate(
+        keyword="서울",
+        entity_type="LOCATION",
+        travel_category="LANDMARK",
+        matched=context,
+    )
+
+    assert _build_precision_evidence(candidate).keyword_locality == "MATCHED_SENTENCE"
+
+
+def test_local_category_context_changes_precision_cache_signature() -> None:
+    first = _localized_precision_candidate(
+        keyword="울산",
+        entity_type="LOCATION",
+        travel_category="LANDMARK",
+        matched="울산을 찾는 관광객이 늘었다.",
+    )
+    second = _localized_precision_candidate(
+        keyword="울산",
+        entity_type="LOCATION",
+        travel_category="LANDMARK",
+        matched="울산 기업의 영업이익이 발표됐다.",
+    )
+
+    assert (
+        _build_precision_evidence(first).cache_signature
+        != _build_precision_evidence(second).cache_signature
+    )
+
+
+def test_news_dateline_location_is_not_local_topic_evidence() -> None:
+    candidate = _localized_precision_candidate(
+        keyword="서울",
+        entity_type="LOCATION",
+        travel_category="FESTIVAL",
+        matched="[서울=뉴시스] 인천 펜타포트 락 페스티벌에 관광객이 방문한다.",
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category="FESTIVAL",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status not in {"semantic_review", "semantic_strong"}
+    assert "DOCUMENT_EVIDENCE_ONLY" in result.reasoning_codes
+
+
+def test_rule_category_does_not_circularly_satisfy_semantic_category() -> None:
+    candidate = _localized_precision_candidate(
+        keyword="국가",
+        entity_type=None,
+        travel_category="FESTIVAL",
+        matched="근대 주권국가의 제도를 설명하는 전시다.",
+        entity_text="서울",
+        context_entity_type="LOCATION",
+        entity_in_local_context=False,
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category="FESTIVAL",
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status == "semantic_rejected"
+    assert "CATEGORY_LOCAL_EVIDENCE_FAIL" in result.reasoning_codes
+
+
+@pytest.mark.parametrize(
+    ("keyword", "entity_type", "category", "context"),
+    [
+        ("폭싹 속았수다", "CONTENT_TITLE", "DRAMA_LOCATION", "드라마 폭싹 속았수다 촬영지를 관광객이 방문한다."),
+        ("폭싹 속았수다 촬영지", "CONTENT_TITLE", "DRAMA_LOCATION", "드라마 폭싹 속았수다 촬영지를 관광객이 방문한다."),
+        ("설봉산 별빛축제", "EVENT", "FESTIVAL", "설봉산 별빛축제가 이천에서 개최된다."),
+        ("홍천강 별빛음악 맥주축제", "EVENT", "FESTIVAL", "홍천강 별빛음악 맥주축제가 개최된다."),
+        ("펜타포트 락 페스티벌", "EVENT", "FESTIVAL", "펜타포트 락 페스티벌이 인천에서 열린다."),
+        ("경남고성공룡세계엑스포", "EVENT", "EXHIBITION", "경남고성공룡세계엑스포 전시를 관람한다."),
+        ("부산국제불교박람회", "EVENT", "LOCAL_CULTURE", "부산국제불교박람회에서 불교 문화 체험을 진행한다."),
+        ("2026 국악관현악축제", "EVENT", "FESTIVAL", "2026 국악관현악축제가 개최된다."),
+    ],
+)
+def test_gold_topics_remain_semantic_reviewable(
+    keyword: str,
+    entity_type: str,
+    category: str,
+    context: str,
+) -> None:
+    candidate = _localized_precision_candidate(
+        keyword=keyword,
+        entity_type=entity_type,
+        travel_category=category,
+        matched=context,
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category=category,
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status in {"semantic_review", "semantic_strong"}
+
+
+@pytest.mark.parametrize(
+    ("keyword", "entity_type", "category", "context"),
+    [
+        ("국가", "LOCATION", "LANDMARK", "근대 주권국가의 제도를 설명한다."),
+        ("식음료", "FOOD", "FOOD", "식음료 시장 진입과 기업 실적을 발표했다."),
+    ],
+)
+def test_existing_generic_false_positive_fixtures_are_not_reviewable(
+    keyword: str,
+    entity_type: str,
+    category: str,
+    context: str,
+) -> None:
+    candidate = _localized_precision_candidate(
+        keyword=keyword,
+        entity_type=entity_type,
+        travel_category=category,
+        matched=context,
+    )
+    result = _calibrate(
+        _build_precision_evidence(candidate),
+        positive_category=category,
+        positive=0.88,
+        negative=0.84,
+    )
+
+    assert result.semantic_status not in {"semantic_review", "semantic_strong"}
+
+
 def test_service_includes_weak_excludes_rejected_persists_and_caches(db_session) -> None:
     candidates = _seed_candidates(db_session)
     candidates["film"].ranking_status = "priority_candidate"
@@ -694,6 +1130,43 @@ def test_scoring_version_change_invalidates_force_false_cache(db_session) -> Non
     assert second.adapter.encoded_passages
 
 
+def test_rule_hash_and_version_change_invalidates_force_false_cache(db_session) -> None:
+    candidate = _seed_candidates(db_session)["festival"]
+    candidate.rule_input_hash = "rule-hash-a"
+    candidate.rule_version = "rule-v1"
+    db_session.commit()
+    first = _semantic_scorer()
+    semantic_filter_travel_opportunities(
+        db_session,
+        scorer=first,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=100,
+        topic_tokenizer=RegexFallbackTokenizer(),
+    )
+    first_hash = candidate.embedding_input_hash
+    candidate.rule_input_hash = "rule-hash-b"
+    candidate.rule_version = "rule-v2"
+    db_session.commit()
+    second = _semantic_scorer()
+
+    result = semantic_filter_travel_opportunities(
+        db_session,
+        scorer=second,
+        week_start=WEEK_START,
+        dry_run=False,
+        force=False,
+        limit=100,
+        topic_tokenizer=RegexFallbackTokenizer(),
+    )
+    db_session.expire_all()
+
+    assert result.cache_hits == 3
+    assert candidate.embedding_input_hash != first_hash
+    assert len(second.adapter.encoded_passages) == 1
+
+
 def test_disabled_service_returns_without_db_changes(monkeypatch, db_session) -> None:
     candidates = _seed_candidates(db_session)
     monkeypatch.setenv("TRAVEL_EMBEDDING_ENABLED", "false")
@@ -850,7 +1323,7 @@ def test_estimated_gemini_candidates_are_distinct_keywords(db_session) -> None:
     )
 
     assert result.processed == 5
-    assert result.semantic_strong == 4
+    assert result.semantic_strong == 3
     assert result.estimated_gemini_candidates == 3
     assert len({item.normalized_keyword for item in result.top_candidates}) == len(
         result.top_candidates
@@ -916,6 +1389,62 @@ def _precision_candidate(
         travel_category=travel_category,
         matched_positive_terms_json="[]",
         keyword_context=SimpleNamespace(combined_context=context),
+    )
+
+
+def _localized_precision_candidate(
+    *,
+    keyword: str,
+    entity_type: str | None,
+    travel_category: str,
+    matched: str,
+    previous: str | None = None,
+    next_sentence: str | None = None,
+    entity_text: str | None = None,
+    context_entity_type: str | None = None,
+    entity_in_local_context: bool = True,
+):
+    resolved_entity_text = entity_text or keyword
+    resolved_entity_type = context_entity_type or entity_type
+    combined = " ".join(
+        value for value in (previous, matched, next_sentence) if value
+    )
+    context_entities = []
+    if resolved_entity_type:
+        mention_text = resolved_entity_text
+        if not entity_in_local_context and mention_text in combined:
+            mention_text = f"문서전용 {mention_text}"
+        context_entities.append(
+            SimpleNamespace(
+                text=mention_text,
+                normalized_text=mention_text.replace(" ", ""),
+                entity_type=resolved_entity_type,
+                confidence=0.9,
+            )
+        )
+    return SimpleNamespace(
+        keyword=keyword,
+        normalized_keyword=keyword.replace(" ", ""),
+        primary_entity=resolved_entity_text if entity_type else None,
+        primary_entity_type=entity_type,
+        travel_category=travel_category,
+        matched_positive_terms_json="[]",
+        keyword_context=SimpleNamespace(
+            previous_sentence=previous,
+            matched_sentence=matched,
+            next_sentence=next_sentence,
+            combined_context=combined,
+        ),
+        context_entities=context_entities,
+    )
+
+
+def _build_precision_evidence(candidate):
+    return build_semantic_precision_evidence(
+        candidate,
+        quality_signal=None,
+        context_entities=candidate.context_entities,
+        tokenizer=RegexFallbackTokenizer(),
     )
 
 

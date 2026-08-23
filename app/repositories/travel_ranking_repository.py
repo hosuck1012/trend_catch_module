@@ -178,6 +178,7 @@ def save_rankings(
         select(TravelOpportunityCandidate).where(
             TravelOpportunityCandidate.week_start == week_start,
             TravelOpportunityCandidate.normalized_keyword.in_(values_by_keyword),
+            TravelOpportunityCandidate.semantic_status.in_(SEMANTIC_RANKING_STATUSES),
         )
     ).all()
     for row in rows:
