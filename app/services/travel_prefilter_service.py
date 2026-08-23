@@ -1,5 +1,5 @@
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 import hashlib
 import json
@@ -16,12 +16,17 @@ from app.context_v2.travel_rules import (
 )
 from app.models.entity_mention import EntityMention
 from app.models.keyword_context import KeywordContext
+from app.models.entity_context import EntityContext
 from app.models.trend_entity_link import TrendEntityLink
 from app.repositories import travel_opportunity_repository as repo
 from app.services.keyword_normalization_service import normalize_keyword
+from app.services.related_destination_expansion_service import (
+    related_destination_metadata,
+    serialize_related_destination,
+)
 
 
-TRAVEL_PREFILTER_VERSION = "v2-rule-2"
+TRAVEL_PREFILTER_VERSION = "v2-rule-3-related-destination"
 
 
 @dataclass(frozen=True)
@@ -156,6 +161,13 @@ def prefilter_travel_opportunities(
             week_start=resolved_start,
             context_ids=[context.id for context in contexts if context.id > 0],
         ) if resolved_start else {}
+        related_destinations_by_keyword = repo.get_related_destination_contexts(
+            session,
+            normalized_keywords=sorted(
+                {context.normalized_keyword for context in contexts}
+            ),
+            week_start=resolved_start,
+        ) if resolved_start else {}
         rows = []
         evaluated_in_page = 0
         for context in contexts:
@@ -170,6 +182,9 @@ def prefilter_travel_opportunities(
                 week_start=resolved_start,
             )
             entities = _entity_signals(context, trend_links, mentions)
+            related_destinations = related_destinations_by_keyword.get(
+                context.normalized_keyword, []
+            )
             trend_signal = TrendSignal(
                 weekly_mentions=trend.weekly_mentions if trend else 0,
                 final_score=trend.final_score if trend else None,
@@ -182,6 +197,7 @@ def prefilter_travel_opportunities(
                 trend=trend_signal,
                 positive_terms=positive_terms,
                 negative_terms=negative_terms,
+                related_destinations=related_destinations,
             )
             existing = existing_by_context.get(context.id)
             if (
@@ -211,6 +227,12 @@ def prefilter_travel_opportunities(
                 trend=trend_signal,
                 positive_terms=positive_terms,
                 negative_terms=negative_terms,
+            )
+            rule_result = _apply_related_destination_evidence(
+                rule_result,
+                keyword=context.keyword,
+                related_destinations=related_destinations,
+                settings=settings,
             )
             status_counts[rule_result.prefilter_status] += 1
             category_counts[rule_result.travel_category] += 1
@@ -333,7 +355,11 @@ def serialize_prefilter_result(result: PrefilterResult) -> dict[str, object]:
     return payload
 
 
-def serialize_candidate(row) -> dict[str, object]:
+def serialize_candidate(
+    row,
+    *,
+    related_destinations: list[EntityContext] | None = None,
+) -> dict[str, object]:
     context = row.keyword_context
     return {
         "keyword": row.keyword,
@@ -374,6 +400,10 @@ def serialize_candidate(row) -> dict[str, object]:
         "cluster_representative": bool(row.cluster_representative),
         "gemini_eligible": bool(row.gemini_eligible),
         "contexts": [_serialize_context(context)] if context else [],
+        "related_destinations": [
+            serialize_related_destination(item)
+            for item in (related_destinations or [])
+        ],
     }
 
 
@@ -401,6 +431,11 @@ def detail_for_keyword(session: Session, normalized_keyword: str) -> dict[str, o
             contexts.append(_serialize_context(context))
         if row.primary_entity and row.primary_entity_type:
             entities.append({"text": row.primary_entity, "entity_type": row.primary_entity_type})
+    related_destinations = repo.get_related_destination_contexts(
+        session,
+        normalized_keywords=[best.normalized_keyword],
+        week_start=best.week_start,
+    ).get(best.normalized_keyword, [])
     return {
         "keyword": best.keyword,
         "normalized_keyword": best.normalized_keyword,
@@ -414,6 +449,9 @@ def detail_for_keyword(session: Session, normalized_keyword: str) -> dict[str, o
         "reasoning_codes": sorted(codes),
         "source_count": len(sources),
         "document_count": len(documents),
+        "related_destinations": [
+            serialize_related_destination(item) for item in related_destinations
+        ],
     }
 
 
@@ -514,6 +552,7 @@ def rule_input_hash(
     trend: TrendSignal,
     positive_terms: list[str],
     negative_terms: list[str],
+    related_destinations: list[EntityContext] | None = None,
 ) -> str:
     settings = get_settings()
     payload = {
@@ -544,6 +583,16 @@ def rule_input_hash(
         },
         "positive_terms": positive_terms,
         "negative_terms": negative_terms,
+        "related_destinations": sorted(
+            (
+                destination.page_id,
+                destination.page_url,
+                destination.summary,
+                round(destination.match_score, 4),
+                destination.revision_id,
+            )
+            for destination in (related_destinations or [])
+        ),
     }
     canonical = json.dumps(
         payload,
@@ -552,6 +601,88 @@ def rule_input_hash(
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _apply_related_destination_evidence(
+    result,
+    *,
+    keyword: str,
+    related_destinations: list[EntityContext],
+    settings,
+):
+    if not related_destinations:
+        return result
+    metadata_rows = [
+        related_destination_metadata(destination)
+        for destination in related_destinations
+    ]
+    metadata_rows = [metadata for metadata in metadata_rows if metadata]
+    if not metadata_rows:
+        return result
+    travel_categories = {
+        str(metadata.get("travel_category", "")).strip()
+        for metadata in metadata_rows
+        if metadata.get("travel_category")
+    }
+    keyword_entity_types = {
+        str(metadata.get("keyword_entity_type", "")).strip()
+        for metadata in metadata_rows
+        if metadata.get("keyword_entity_type")
+    }
+    theme_prior = 20.0 if "CONTENT_TITLE" in keyword_entity_types else 15.0
+    destination_score = min(30.0, 15.0 + len(related_destinations) * 5.0)
+    entity_prior = max(result.entity_prior_score, theme_prior)
+    positive_score = max(result.positive_context_score, destination_score)
+    travel_score = round(
+        min(
+            100.0,
+            max(
+                0.0,
+                entity_prior
+                + positive_score
+                + result.trend_evidence_score
+                + result.source_diversity_score
+                - result.negative_context_penalty,
+            ),
+        ),
+        2,
+    )
+    if travel_score >= settings.travel_prefilter_strong_score:
+        status = "strong"
+    elif travel_score >= settings.travel_prefilter_review_score:
+        status = "review"
+    elif travel_score >= settings.travel_prefilter_min_score:
+        status = "weak"
+    else:
+        status = "rejected"
+    matched_positive_terms = sorted(
+        set(result.matched_positive_terms) | {"여행", "방문", "체험"}
+    )
+    reasoning_codes = sorted(
+        (
+            set(result.reasoning_codes)
+            - {"NO_TRAVEL_SIGNAL"}
+        )
+        | {
+            "CONTENT_THEME_DESTINATION",
+            "OFFICIAL_DESTINATION_SOURCE",
+            "CURATED_DESTINATION_SUGGESTION",
+            "RELATED_DESTINATION_VERIFIED",
+        }
+    )
+    return replace(
+        result,
+        primary_entity=result.primary_entity or keyword,
+        primary_entity_type=result.primary_entity_type
+        or next(iter(keyword_entity_types), "CONTENT_TITLE"),
+        travel_category=next(iter(travel_categories), "LOCAL_CULTURE"),
+        entity_prior_score=entity_prior,
+        positive_context_score=positive_score,
+        travel_pre_score=travel_score,
+        prefilter_status=status,
+        matched_positive_terms=matched_positive_terms,
+        reasoning_codes=reasoning_codes,
+    )
 
 
 def _serialize_context(context) -> dict[str, object]:

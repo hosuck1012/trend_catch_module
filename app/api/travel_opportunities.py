@@ -23,6 +23,7 @@ from app.schemas.travel_opportunity import (
     BuildContextsResponse,
     CalibrationReportResponse,
     PrefilterResponse,
+    RelatedDestinationExpansionResponse,
     RankingResponse,
     SemanticFilterResponse,
     TravelOpportunityDetailResponse,
@@ -43,6 +44,10 @@ from app.services.final_travel_opportunity_service import (
 )
 from app.services.keyword_normalization_service import normalize_keyword
 from app.services.keyword_context_service import build_keyword_contexts, serialize_build_result
+from app.services.related_destination_expansion_service import (
+    expand_related_destinations,
+    serialize_expansion_result,
+)
 from app.services.travel_prefilter_service import (
     detail_for_keyword,
     prefilter_travel_opportunities,
@@ -151,6 +156,28 @@ def build_contexts(
             dry_run=dry_run,
             after_id=after_id,
             process_all=process_all,
+        )
+    )
+
+
+@router.post(
+    "/expand-destinations",
+    response_model=RelatedDestinationExpansionResponse,
+)
+def expand_destinations(
+    week_start: date | None = Query(default=None),
+    dry_run: bool = Query(default=True),
+    force: bool = Query(default=False),
+    limit: int = Query(default=500, ge=1, le=5000),
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    return serialize_expansion_result(
+        expand_related_destinations(
+            session,
+            week_start=week_start,
+            dry_run=dry_run,
+            force=force,
+            limit=limit,
         )
     )
 
@@ -326,7 +353,30 @@ def list_opportunities(
         ranking_status=ranking_status,
         limit=limit,
     )
-    return {"total": len(rows), "items": [serialize_candidate(row) for row in rows]}
+    related_by_key: dict[tuple[date, str], list[object]] = {}
+    for row_week_start in {row.week_start for row in rows}:
+        week_rows = [row for row in rows if row.week_start == row_week_start]
+        destinations = repo.get_related_destination_contexts(
+            session,
+            normalized_keywords=sorted(
+                {row.normalized_keyword for row in week_rows}
+            ),
+            week_start=row_week_start,
+        )
+        for normalized_keyword, contexts in destinations.items():
+            related_by_key[(row_week_start, normalized_keyword)] = contexts
+    return {
+        "total": len(rows),
+        "items": [
+            serialize_candidate(
+                row,
+                related_destinations=related_by_key.get(
+                    (row.week_start, row.normalized_keyword), []
+                ),
+            )
+            for row in rows
+        ],
+    }
 
 
 @router.get("/{normalized_keyword}", response_model=TravelOpportunityDetailResponse)

@@ -23,6 +23,9 @@ from app.context_v2.semantic_precision import (
 from app.keywords.tokenizer import Tokenizer
 from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
 from app.repositories import travel_opportunity_repository as repo
+from app.services.related_destination_expansion_service import (
+    related_destination_summary,
+)
 
 
 SEMANTIC_RANKING_STATUSES = {"semantic_review", "semantic_strong"}
@@ -105,6 +108,19 @@ def semantic_filter_travel_opportunities(
         session,
         candidates=candidates,
     )
+    related_destinations = repo.get_related_destination_contexts(
+        session,
+        normalized_keywords=sorted(
+            {candidate.normalized_keyword for candidate in candidates}
+        ),
+        week_start=resolved_start,
+    )
+    supplemental_contexts = {
+        candidate.id: related_destination_summary(
+            related_destinations.get(candidate.normalized_keyword, [])
+        )
+        for candidate in candidates
+    }
     generic_terms = load_generic_topic_terms()
     precision_evidence = {
         candidate.id: build_semantic_precision_evidence(
@@ -113,6 +129,7 @@ def semantic_filter_travel_opportunities(
             context_entities=context_entities.get(candidate.id, []),
             generic_terms=generic_terms,
             tokenizer=topic_tokenizer,
+            supplemental_context=supplemental_contexts[candidate.id],
         )
         for candidate in candidates
     }
@@ -129,6 +146,13 @@ def semantic_filter_travel_opportunities(
             candidate,
             max_chars=settings.travel_embedding_max_context_chars,
         )
+        supplemental_context = supplemental_contexts[candidate.id]
+        if supplemental_context:
+            candidate_text = _merge_embedding_context(
+                candidate_text,
+                supplemental_context,
+                max_chars=settings.travel_embedding_max_context_chars,
+            )
         input_hash = semantic_input_hash(
             model_name=model_name,
             context_hash=candidate.keyword_context.context_hash,
@@ -263,6 +287,23 @@ def semantic_input_hash(
         )
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _merge_embedding_context(
+    candidate_text: str,
+    supplemental_context: str,
+    *,
+    max_chars: int,
+) -> str:
+    """Keep curated context visible without exceeding the model input budget."""
+    limit = max(1, max_chars)
+    supplemental = supplemental_context.strip()
+    if not supplemental:
+        return candidate_text[:limit]
+    separator = "\n"
+    supplemental_budget = min(len(supplemental), max(1, limit * 2 // 5))
+    base_budget = max(0, limit - len(separator) - supplemental_budget)
+    return f"{candidate_text[:base_budget]}{separator}{supplemental[:supplemental_budget]}"[:limit]
 
 
 def serialize_semantic_filter_result(result: SemanticFilterResult) -> dict[str, object]:

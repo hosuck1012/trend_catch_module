@@ -1,0 +1,50 @@
+{
+  "version": "v1",
+  "rules": [
+    {
+      "keyword": "F1 더 무비",
+      "required_source": "google_yis_2025_kr",
+      "source_category": "영화",
+      "theme_code": "MOTORSPORT",
+      "theme_label": "모터스포츠·서킷 체험",
+      "travel_category": "SPORTS_EVENT",
+      "keyword_entity_type": "CONTENT_TITLE",
+      "theme_confidence": 0.96,
+      "destinations": [
+        {
+          "destination_id": "korea-international-circuit",
+          "name": "코리아 인터내셔널 서킷",
+          "region": "전라남도 영암군",
+          "entity_type": "PLACE",
+          "activity": "국내 모터스포츠 경기 관람과 서킷 행사 일정 연계",
+          "visitability": "경기·행사 일정 사전 확인 필요",
+          "official_url": "https://kara.or.kr/static/upload/boardkara/20250725013046_1026195476_0.pdf",
+          "source_title": "대한자동차경주협회 국내 서킷 소개",
+          "match_confidence": 0.94
+        },
+        {
+          "destination_id": "inje-speedium",
+          "name": "인제스피디움",
+          "region": "강원특별자치도 인제군",
+          "entity_type": "PLACE",
+          "activity": "서킷 택시·서킷 사파리·레저 카트·클래식카 박물관 체험",
+          "visitability": "프로그램 운영일과 예약 가능 여부 사전 확인 필요",
+          "official_url": "https://www.speedium.co.kr/company/content/01_01.jsp",
+          "source_title": "인제스피디움 공식 소개",
+          "match_confidence": 0.98
+        },
+        {
+          "destination_id": "bmw-driving-center",
+          "name": "BMW 드라이빙 센터",
+          "region": "인천광역시 중구",
+          "entity_type": "PLACE",
+          "activity": "예약형 트랙 드라이빙과 자동차 문화 체험",
+          "visitability": "프로그램별 사전 예약 필요",
+          "official_url": "https://driving-center.bmw.co.kr/",
+          "source_title": "BMW 드라이빙 센터 공식 홈페이지",
+          "match_confidence": 0.97
+        }
+      ]
+    }
+  ]
+}

@@ -179,6 +179,15 @@ def test_high_precision_formula_and_ranking_boundaries() -> None:
     assert classify_ranking(90, "PASS") == "priority_candidate"
     assert classify_ranking(95, "NEEDS_EVIDENCE") == "gemini_candidate"
     assert classify_ranking(99, "REJECT") == "rejected"
+    assert (
+        classify_ranking(60, "NEEDS_EVIDENCE", curated_destination=True)
+        == "review"
+    )
+    assert (
+        classify_ranking(59.99, "NEEDS_EVIDENCE", curated_destination=True)
+        == "rejected"
+    )
+    assert classify_ranking(99, "REJECT", curated_destination=True) == "rejected"
 
 
 def test_weekly_budget_prioritizes_priority_then_gemini_and_does_not_fill() -> None:
@@ -351,7 +360,7 @@ def test_persisted_rank_and_calibration_dashboard_summary(client, db_session) ->
     assert ranked.status_code == 200
     assert report.status_code == 200
     payload = report.json()
-    assert payload["ranking_version"] == "v2-step3-local-2"
+    assert payload["ranking_version"] == "v2-step3-local-4-curated-destination-review"
     assert payload["total_semantic_candidates"] == 3
     assert sum(payload["evidence_gate_counts"].values()) == 3
     assert payload["funnel"]["gemini_eligible"] <= payload["weekly_gemini_budget"]

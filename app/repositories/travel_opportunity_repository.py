@@ -6,16 +6,47 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.models.entity_mention import EntityMention
+from app.models.entity_context import EntityContext
 from app.models.keyword_candidate import KeywordCandidate
 from app.models.keyword_context import KeywordContext
 from app.models.keyword_occurrence import KeywordOccurrence
 from app.models.source_document import SourceDocument
 from app.models.travel_opportunity_candidate import TravelOpportunityCandidate
 from app.models.trend_entity_link import TrendEntityLink
+from app.models.trend_context_link import TrendContextLink
 from app.models.weekly_trend import WeeklyTrend
 
 
 SEMANTIC_PREFILTER_STATUSES = ("weak", "review", "strong")
+RELATED_DESTINATION_PAGE_ID_PREFIX = "travel-destination:"
+
+
+def get_related_destination_contexts(
+    session: Session,
+    *,
+    normalized_keywords: list[str],
+    week_start: date,
+) -> dict[str, list[EntityContext]]:
+    if not normalized_keywords:
+        return {}
+    rows = session.execute(
+        select(TrendContextLink.keyword, EntityContext)
+        .join(EntityContext, EntityContext.id == TrendContextLink.entity_context_id)
+        .where(
+            TrendContextLink.week_start == week_start,
+            TrendContextLink.keyword.in_(normalized_keywords),
+            EntityContext.page_id.like(f"{RELATED_DESTINATION_PAGE_ID_PREFIX}%"),
+            EntityContext.match_status.in_(("matched", "manual")),
+        )
+        .order_by(
+            TrendContextLink.context_score.desc(),
+            EntityContext.entity_text.asc(),
+        )
+    ).all()
+    result: dict[str, list[EntityContext]] = {}
+    for keyword, context in rows:
+        result.setdefault(keyword, []).append(context)
+    return result
 
 
 def resolve_week_range(session: Session, week_start: date | None) -> tuple[date | None, date | None]:

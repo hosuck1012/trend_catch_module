@@ -266,6 +266,7 @@ def build_semantic_precision_evidence(
     context_entities: Sequence[EntitySignal],
     generic_terms: GenericTopicTerms | None = None,
     tokenizer: Tokenizer | None = None,
+    supplemental_context: str = "",
 ) -> SemanticPrecisionEvidence:
     generic_terms = generic_terms or load_generic_topic_terms()
     tokenizer = tokenizer or get_topic_tokenizer()
@@ -280,6 +281,10 @@ def build_semantic_precision_evidence(
     adjacent_context = " ".join(
         value for value in (previous_context, next_context) if value
     )
+    if supplemental_context.strip():
+        adjacent_context = " ".join(
+            value for value in (adjacent_context, supplemental_context.strip()) if value
+        )
     tokens = tokenizer.tokenize(candidate.keyword)
     meaningful_tokens = tuple(token for token in tokens if _is_meaningful_token(token))
     token_count = len(meaningful_tokens)
@@ -455,6 +460,7 @@ def build_semantic_precision_evidence(
         "malformed_topic": malformed_topic,
         "matched_context_hash": _text_hash(matched_context),
         "adjacent_context_hash": _text_hash(adjacent_context),
+        "supplemental_context_hash": _text_hash(supplemental_context),
         "travel_category": candidate.travel_category,
         "matched_positive_terms": _json_terms(candidate.matched_positive_terms_json),
         "quality": _quality_payload(quality_signal),
@@ -672,7 +678,19 @@ def _category_coherence(
     elif positive_category == TravelCategory.SPORTS_EVENT:
         explicit_sport = _contains_any(
             category_context,
-            ("마라톤", "야구", "축구", "농구", "배구", "테니스", "골프"),
+            (
+                "마라톤",
+                "야구",
+                "축구",
+                "농구",
+                "배구",
+                "테니스",
+                "골프",
+                "f1",
+                "모터스포츠",
+                "레이싱",
+                "서킷",
+            ),
         )
         visitor_signal = _contains_any(
             category_context,
@@ -680,7 +698,18 @@ def _category_coherence(
         )
         hosting_signal = _contains_any(
             category_context,
-            ("개최", "개막", "열리", "열린", "경기장", "야구장", "구장", "스타디움"),
+            (
+                "개최",
+                "개막",
+                "열리",
+                "열린",
+                "경기장",
+                "야구장",
+                "구장",
+                "스타디움",
+                "서킷",
+                "트랙",
+            ),
         )
         entity_match = "EVENT" in entity_types
         context_match = keyword_is_local and explicit_sport and (

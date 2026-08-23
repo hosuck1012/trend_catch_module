@@ -35,6 +35,46 @@ class BuildContextsResponse(BaseModel):
     unmatched_accepted_pairs: int = 0
 
 
+class RelatedDestinationPreviewResponse(BaseModel):
+    keyword: str
+    theme_code: str
+    theme_label: str
+    destination_name: str
+    region: str
+    activity: str
+    official_url: str
+    relation_score: float
+
+
+class RelatedDestinationExpansionResponse(BaseModel):
+    status: str
+    dry_run: bool
+    week_start: date | None = None
+    week_end: date | None = None
+    catalog_version: str
+    matched_keywords: int
+    destinations_matched: int
+    contexts_created: int
+    contexts_updated: int
+    links_created: int
+    links_updated: int
+    skipped: int
+    previews: list[RelatedDestinationPreviewResponse] = Field(default_factory=list)
+
+
+class RelatedDestinationResponse(BaseModel):
+    name: str
+    entity_type: str
+    region: str | None = None
+    theme_code: str | None = None
+    theme_label: str | None = None
+    activity: str | None = None
+    visitability: str | None = None
+    official_url: str
+    source_title: str
+    match_score: float
+
+
 class TravelCandidatePreviewResponse(BaseModel):
     keyword: str
     normalized_keyword: str
@@ -163,6 +203,7 @@ class TravelOpportunityItemResponse(BaseModel):
     cluster_representative: bool = False
     gemini_eligible: bool = False
     contexts: list[TravelOpportunityContextResponse] = Field(default_factory=list)
+    related_destinations: list[RelatedDestinationResponse] = Field(default_factory=list)
 
 
 class TravelOpportunityListResponse(BaseModel):
@@ -188,6 +229,7 @@ class TravelOpportunityDetailResponse(BaseModel):
     reasoning_codes: list[str]
     source_count: int
     document_count: int
+    related_destinations: list[RelatedDestinationResponse] = Field(default_factory=list)
 
 
 class TravelOpportunitySummaryResponse(BaseModel):
@@ -231,6 +273,7 @@ class RankingCandidateResponse(BaseModel):
     cluster_representative: bool
     gemini_eligible: bool
     contexts: list[str] = Field(default_factory=list)
+    related_destinations: list[RelatedDestinationResponse] = Field(default_factory=list)
 
 
 class FunnelResponse(BaseModel):

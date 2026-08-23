@@ -19,12 +19,17 @@ from app.models.trend_entity_link import TrendEntityLink
 from app.models.weekly_trend import WeeklyTrend
 from app.repositories import travel_opportunity_repository as opportunity_repo
 from app.repositories import travel_ranking_repository as repo
+from app.services.related_destination_expansion_service import (
+    is_related_destination_context,
+    serialize_related_destination,
+)
 
 
-RANKING_VERSION = "v2-step3-local-2"
+RANKING_VERSION = "v2-step3-local-4-curated-destination-review"
 RANKING_THRESHOLDS = {
     "rejected_max": 69.99,
     "review_min": 70.0,
+    "curated_destination_review_min": 60.0,
     "gemini_candidate_min": 80.0,
     "priority_candidate_min": 90.0,
 }
@@ -98,6 +103,7 @@ class RankedCandidate:
     cluster_representative: bool = False
     gemini_eligible: bool = False
     contexts: list[str] = field(default_factory=list)
+    related_destinations: list[dict[str, object]] = field(default_factory=list)
     _document_ids: set[int] = field(default_factory=set, repr=False)
     _entity_keys: set[tuple[str, str]] = field(default_factory=set, repr=False)
 
@@ -197,9 +203,18 @@ def rank_travel_opportunities(
             mentions=document_mentions,
         )
         keyword_links = links_by_keyword.get(keyword, [])
-        entity_types = {
+        keyword_entity_contexts = entity_contexts.get(keyword, [])
+        related_destination_contexts = [
+            context
+            for context in keyword_entity_contexts
+            if is_related_destination_context(context)
+        ]
+        grounded_entity_types = {
             mention.entity_type for mention in keyword_mentions
         } | {link.entity_type for link in keyword_links}
+        convertibility_entity_types = grounded_entity_types | {
+            context.entity_type for context in related_destination_contexts
+        }
         entity_keys = {
             (mention.normalized_text, mention.entity_type) for mention in keyword_mentions
         } | {(link.normalized_entity, link.entity_type) for link in keyword_links}
@@ -221,7 +236,7 @@ def rank_travel_opportunities(
         )
         convertibility_score = score_travel_convertibility(
             rows=rows,
-            entity_types=entity_types,
+            entity_types=convertibility_entity_types,
         )
         evidence = assess_evidence(
             rows=rows,
@@ -230,7 +245,7 @@ def rank_travel_opportunities(
             source_count=source_count,
             mentions=keyword_mentions,
             trend_links=keyword_links,
-            entity_contexts=entity_contexts.get(keyword, []),
+            entity_contexts=keyword_entity_contexts,
         )
         high_precision = calculate_high_precision_score(
             trend_strength=trend_score,
@@ -238,7 +253,11 @@ def rank_travel_opportunities(
             travel_convertibility=convertibility_score,
             evidence_confidence=evidence.score,
         )
-        ranking_status = classify_ranking(high_precision, evidence.gate)
+        ranking_status = classify_ranking(
+            high_precision,
+            evidence.gate,
+            curated_destination=bool(related_destination_contexts),
+        )
         ranked.append(
             RankedCandidate(
                 keyword=best.keyword,
@@ -260,6 +279,10 @@ def rank_travel_opportunities(
                 evidence_source_count=evidence.source_count,
                 ranking_status=ranking_status,
                 contexts=[context.combined_context for context in keyword_contexts[:5]],
+                related_destinations=[
+                    serialize_related_destination(context)
+                    for context in related_destination_contexts
+                ],
                 _document_ids=set(document_ids),
                 _entity_keys=entity_keys,
             )
@@ -279,14 +302,11 @@ def rank_travel_opportunities(
             item.normalized_keyword: _persistence_values(item)
             for item in ranked
         }
-        if force or any(
-            row.ranking_version != RANKING_VERSION for row in candidate_rows
-        ):
-            repo.save_rankings(
-                session,
-                values_by_keyword=values_by_keyword,
-                week_start=resolved_start,
-            )
+        repo.save_rankings(
+            session,
+            values_by_keyword=values_by_keyword,
+            week_start=resolved_start,
+        )
 
     status_counts = Counter(item.ranking_status for item in ranked)
     gate_counts = Counter(item.evidence_gate for item in ranked)
@@ -489,13 +509,22 @@ def assess_evidence(
     if categories & {"FILM_LOCATION", "DRAMA_LOCATION", "SHOW_LOCATION"}:
         codes.add("FILM_CONTEXT")
     eligible_contexts = []
+    related_destination_contexts = []
     for context in entity_contexts:
+        if is_related_destination_context(context):
+            related_destination_contexts.append(context)
+            continue
         if context.match_status == "manual" or context.provider in {"manual", "namuwiki_manual"} and context.match_status == "manual":
             codes.add("MANUAL_CONTEXT")
             eligible_contexts.append(context)
         elif context.provider == "wikipedia_ko" and context.match_status == "matched":
             codes.add("MATCHED_CONTEXT")
             eligible_contexts.append(context)
+
+    if related_destination_contexts:
+        codes.add("RELATED_DESTINATION_CONTEXT")
+        codes.add("OFFICIAL_DESTINATION_SOURCE")
+        codes.add("CURATED_DESTINATION_SUGGESTION")
 
     location_evidence = bool(entity_types & {"LOCATION", "PLACE"})
     if not location_evidence:
@@ -579,8 +608,22 @@ def calculate_high_precision_score(
     )
 
 
-def classify_ranking(score: float, evidence_gate: str) -> str:
-    if evidence_gate == "REJECT" or score < RANKING_THRESHOLDS["review_min"]:
+def classify_ranking(
+    score: float,
+    evidence_gate: str,
+    *,
+    curated_destination: bool = False,
+) -> str:
+    if evidence_gate == "REJECT":
+        return "rejected"
+    if (
+        curated_destination
+        and evidence_gate == "NEEDS_EVIDENCE"
+        and score >= RANKING_THRESHOLDS["curated_destination_review_min"]
+        and score < RANKING_THRESHOLDS["review_min"]
+    ):
+        return "review"
+    if score < RANKING_THRESHOLDS["review_min"]:
         return "rejected"
     if score < RANKING_THRESHOLDS["gemini_candidate_min"]:
         return "review"
@@ -711,6 +754,11 @@ def calibration_report(
         candidates,
         key=lambda row: (-(row.high_precision_score or 0), row.normalized_keyword),
     )[:20]
+    related_destinations = opportunity_repo.get_related_destination_contexts(
+        session,
+        normalized_keywords=[row.normalized_keyword for row in top],
+        week_start=resolved_start,
+    ) if resolved_start else {}
     return {
         "ranking_version": RANKING_VERSION,
         "week_start": resolved_start,
@@ -726,7 +774,15 @@ def calibration_report(
             "REJECT": gate_counts["REJECT"],
         },
         "score_distribution": distribution,
-        "top_20_candidates": [_serialize_persisted(row) for row in top],
+        "top_20_candidates": [
+            _serialize_persisted(
+                row,
+                related_destinations=related_destinations.get(
+                    row.normalized_keyword, []
+                ),
+            )
+            for row in top
+        ],
         "annualized_candidate_estimate": estimate,
         "insufficient_history": insufficient,
         "weekly_gemini_budget": get_settings().travel_gemini_max_candidates_per_week,
@@ -750,7 +806,11 @@ def serialize_ranked_candidate(item: RankedCandidate) -> dict[str, object]:
     }
 
 
-def _serialize_persisted(row: TravelOpportunityCandidate) -> dict[str, object]:
+def _serialize_persisted(
+    row: TravelOpportunityCandidate,
+    *,
+    related_destinations: Sequence[EntityContext] = (),
+) -> dict[str, object]:
     context = row.keyword_context
     return {
         "keyword": row.keyword,
@@ -776,6 +836,9 @@ def _serialize_persisted(row: TravelOpportunityCandidate) -> dict[str, object]:
         "cluster_representative": bool(row.cluster_representative),
         "gemini_eligible": bool(row.gemini_eligible),
         "contexts": [context.combined_context] if context else [],
+        "related_destinations": [
+            serialize_related_destination(item) for item in related_destinations
+        ],
     }
 
 
