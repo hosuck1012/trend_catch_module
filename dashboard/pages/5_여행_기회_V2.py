@@ -128,6 +128,18 @@ for item in items:
         st.write("Travel Category:", item.get("travel_category", "OTHER"))
         st.write("Semantic Category:", item.get("semantic_category") or "-")
         st.write("Evidence Codes:", ", ".join(item.get("evidence_codes", [])) or "-")
+        related_destinations = item.get("related_destinations", [])
+        if related_destinations:
+            st.markdown("**공식 정보가 확인된 연관 여행지 제안**")
+            for destination in related_destinations:
+                name = destination.get("name", "-")
+                region = destination.get("region") or "지역 미상"
+                activity = destination.get("activity") or "체험 정보 확인 필요"
+                official_url = destination.get("official_url")
+                if official_url:
+                    st.markdown(f"- [{name}]({official_url}) · {region} · {activity}")
+                else:
+                    st.write(f"- {name} · {region} · {activity}")
         st.write(
             "Cluster:",
             item.get("cluster_id") or "-",
