@@ -72,9 +72,23 @@ def render_ai_analysis_page() -> None:
     _render_ai_status(ai_status)
     st.subheader("수동 분석 실행")
     ai_candidates = _select_ai_candidates(trends)
-    keywords = [item.get("normalized_keyword") for item in ai_candidates]
+    labels = {
+        item.get("normalized_keyword"): item.get("keyword") or item.get("normalized_keyword")
+        for item in ai_candidates
+        if item.get("normalized_keyword")
+    }
+    keywords = list(labels)
     if keywords:
-        selected_keyword = st.selectbox("키워드", keywords, key="ai_run_keyword")
+        st.caption(
+            f"트렌드 대시보드와 같은 전체 키워드 {len(keywords)}개를 표시합니다. "
+            "필요하면 사이드바 검색어로 좁혀서 선택하세요."
+        )
+        selected_keyword = st.selectbox(
+            "키워드",
+            keywords,
+            key="ai_run_keyword",
+            format_func=lambda value: labels.get(value, value),
+        )
         force = st.checkbox("force 재분석", value=False, key="ai_force")
         running = bool(st.session_state.get("ai_analysis_running", False))
         if st.button(
@@ -128,7 +142,11 @@ def render_ai_analysis_page() -> None:
         st.error(str(exc))
         return
     matching_trend = next(
-        (item for item in trends if item.get("normalized_keyword") == selected),
+        (
+            item
+            for item in [*trends, *ai_candidates]
+            if item.get("normalized_keyword") == selected
+        ),
         None,
     )
     render_ai_analysis(analysis, trend=matching_trend)
@@ -251,15 +269,11 @@ def _render_ai_analysis_list(analyses: list[dict]) -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
-def _select_ai_candidates(trends: list[dict], *, limit: int = 5) -> list[dict]:
+def _select_ai_candidates(trends: list[dict], *, limit: int = 5000) -> list[dict]:
     eligible = [
         item
         for item in trends
         if item.get("normalized_keyword")
-        and item.get("final_score") is not None
-        and item.get("keyword_quality_score") is not None
-        and int(item.get("document_count") or 0) > 0
-        and not item.get("suspicious", False)
     ]
     return sorted(
         eligible,

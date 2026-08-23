@@ -16,7 +16,7 @@ class DashboardFilters:
     ai_status: str | None
     watchlist_only: bool
     query: str
-    include_low_quality: bool = False
+    include_low_quality: bool = True
 
 
 def _client(base_url: str, timeout_seconds: int) -> DashboardAPIClient:
@@ -117,7 +117,7 @@ def render_sidebar(overview: dict) -> DashboardFilters:
         travel_choice = st.selectbox("여행 연관성 등급", ["전체", "high", "medium", "low", "none"])
         ai_choice = st.selectbox("AI 분석 상태", ["전체", "completed", "partial", "error", "not_analyzed"])
         watchlist_only = st.checkbox("Watchlist만 표시")
-        include_low_quality = st.checkbox("저품질 키워드 포함", value=False)
+        include_low_quality = st.checkbox("저품질 키워드 포함", value=True)
         query = st.text_input("검색어 입력", placeholder="키워드 검색")
         if st.button("데이터 새로고침", use_container_width=True):
             clear_dashboard_cache()

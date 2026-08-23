@@ -17,9 +17,9 @@ def get_dashboard_settings() -> DashboardSettings:
             "DASHBOARD_API_BASE_URL", "http://127.0.0.1:8000"
         ).rstrip("/"),
         request_timeout_seconds=_positive_int(
-            os.getenv("DASHBOARD_REQUEST_TIMEOUT_SECONDS"), 20
+            os.getenv("DASHBOARD_REQUEST_TIMEOUT_SECONDS"), 90
         ),
-        page_size=_positive_int(os.getenv("DASHBOARD_PAGE_SIZE"), 20),
+        page_size=_positive_int(os.getenv("DASHBOARD_PAGE_SIZE"), 5000),
     )
 
 

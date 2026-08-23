@@ -122,7 +122,11 @@ def get_dashboard_trends(
             "items": [],
         }
 
-    statement = select(WeeklyTrend).where(WeeklyTrend.week_start == selected_week)
+    statement = select(WeeklyTrend).where(
+        WeeklyTrend.week_start == selected_week,
+        WeeklyTrend.trend_score.is_not(None),
+        WeeklyTrend.final_score.is_not(None),
+    )
     if not include_low_quality:
         settings = get_settings()
         blocked = set(load_word_set("stopwords_ko.txt"))
@@ -144,8 +148,6 @@ def get_dashboard_trends(
                     )
                 ),
             ),
-            WeeklyTrend.trend_score.is_not(None),
-            WeeklyTrend.final_score.is_not(None),
             WeeklyTrend.status.in_(("weekly_trend", "watchlist", "stable")),
             ~WeeklyTrend.keyword.in_(blocked),
             func.length(WeeklyTrend.keyword) > 1,
