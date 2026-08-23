@@ -9,11 +9,16 @@ from app.repositories.search_interest_repository import (
 )
 from app.repositories.trend_repository import get_latest_week_range
 from app.schemas.search_interest import (
+    GoogleYearInSearchSeedResponse,
     ManualSearchInterestRequest,
     SearchInterestImportResponse,
     SearchInterestRecalculateResponse,
     SearchInterestStatusResponse,
     SearchValidationDetailResponse,
+)
+from app.services.google_year_in_search_seed_service import (
+    GOOGLE_YEAR_IN_SEARCH_2025_KR_SOURCE,
+    seed_google_year_in_search_2025_kr,
 )
 from app.services.keyword_normalization_service import normalize_keyword
 from app.services.search_interest_import_service import (
@@ -49,6 +54,29 @@ async def import_naver_datalab(
     session: Session = Depends(get_db),
 ) -> dict[str, object]:
     return await _import_csv(file, geo, "naver_datalab", session)
+
+
+@router.post(
+    "/import/google-year-in-search-2025-kr",
+    response_model=GoogleYearInSearchSeedResponse,
+)
+def import_google_year_in_search_2025_kr(
+    session: Session = Depends(get_db),
+) -> dict[str, object]:
+    result = seed_google_year_in_search_2025_kr(session)
+    return {
+        "status": "ok",
+        "provider": GOOGLE_YEAR_IN_SEARCH_2025_KR_SOURCE,
+        "year": result.year,
+        "geo": result.geo,
+        "categories": result.categories,
+        "received_keywords": result.received_keywords,
+        "inserted_documents": result.inserted_documents,
+        "inserted_occurrences": result.inserted_occurrences,
+        "skipped_keywords": result.skipped_keywords,
+        "week_start": result.week_start,
+        "week_end": result.week_end,
+    }
 
 
 @router.post("/manual", response_model=SearchInterestImportResponse)

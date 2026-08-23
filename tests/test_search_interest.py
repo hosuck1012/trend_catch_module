@@ -8,6 +8,9 @@ from app.models.search_interest_observation import SearchInterestObservation
 from app.models.search_validation_result import SearchValidationResult
 from app.models.weekly_trend import WeeklyTrend
 from app.repositories.search_interest_repository import ObservationPoint
+from app.services.google_year_in_search_seed_service import (
+    GOOGLE_YEAR_IN_SEARCH_2025_KR_SOURCE,
+)
 from app.services.search_interest_scoring_service import (
     ProviderScore,
     calculate_provider_score,
@@ -162,6 +165,33 @@ def test_google_provider_is_saved(client, db_session) -> None:
     assert observation is not None
     assert observation.provider == "google_trends"
     assert observation.source_type == "csv"
+
+
+def test_google_year_in_search_seed_imports_official_keywords(client, db_session) -> None:
+    _prepare_trends(client)
+
+    first = client.post("/api/search-interest/import/google-year-in-search-2025-kr")
+    second = client.post("/api/search-interest/import/google-year-in-search-2025-kr")
+
+    body = first.json()
+    assert first.status_code == 200
+    assert body["provider"] == GOOGLE_YEAR_IN_SEARCH_2025_KR_SOURCE
+    assert body["year"] == 2025
+    assert body["geo"] == "KR"
+    assert body["categories"] >= 10
+    assert body["received_keywords"] > 100
+    assert body["inserted_occurrences"] > 0
+    assert second.status_code == 200
+    assert second.json()["inserted_occurrences"] == 0
+
+    response = client.post("/api/trends/recalculate")
+    db_session.expire_all()
+    seeded = db_session.scalar(select(WeeklyTrend).where(WeeklyTrend.keyword == "상하이"))
+    assert response.status_code == 200
+    assert seeded is not None
+    assert seeded.status == "watchlist"
+    assert seeded.source_count == 1
+    assert seeded.keyword_quality_score == 90
 
 
 def test_naver_provider_is_saved(client, db_session) -> None:

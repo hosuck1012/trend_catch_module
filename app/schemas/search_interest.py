@@ -26,6 +26,20 @@ class SearchInterestImportResponse(BaseModel):
     errors: list[SearchInterestImportErrorResponse]
 
 
+class GoogleYearInSearchSeedResponse(BaseModel):
+    status: str
+    provider: str
+    year: int
+    geo: str
+    categories: int
+    received_keywords: int
+    inserted_documents: int
+    inserted_occurrences: int
+    skipped_keywords: int
+    week_start: date
+    week_end: date
+
+
 class ManualObservationRequest(BaseModel):
     date: date
     value: float = Field(ge=0, le=100)

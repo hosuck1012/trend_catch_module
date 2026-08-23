@@ -10,6 +10,9 @@ from app.repositories.trend_repository import (
     get_occurrences_between,
     upsert_weekly_trends,
 )
+from app.services.google_year_in_search_seed_service import (
+    apply_google_year_in_search_watchlist_overrides,
+)
 from app.services.trend_scoring_service import KeywordMetricsInput, KeywordTrendScore, score_keyword
 
 
@@ -52,8 +55,22 @@ def recalculate_weekly_trends(session: Session) -> TrendCalculationResult:
         week_start=week_start,
         week_end=week_end,
         scores=scores,
+        commit=False,
     )
+    session.flush()
+    overridden_watchlist = apply_google_year_in_search_watchlist_overrides(
+        session,
+        week_start=week_start,
+        week_end=week_end,
+    )
+    session.commit()
     status_counts = Counter(score.status for score in scores)
+    if overridden_watchlist:
+        status_counts["insufficient_data"] = max(
+            status_counts.get("insufficient_data", 0) - overridden_watchlist,
+            0,
+        )
+        status_counts["watchlist"] += overridden_watchlist
     return TrendCalculationResult(
         week_start=week_start,
         week_end=week_end,
